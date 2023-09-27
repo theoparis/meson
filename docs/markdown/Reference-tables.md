@@ -60,6 +60,7 @@ These are return values of the `get_linker_id` method in a compiler object.
 | ld.mold    | The fast MOLD linker                        |
 | ld.solaris | Solaris and illumos                         |
 | ld.wasm    | emscripten's wasm-ld linker                 |
+| ld.zig     | The Zig linker (C/C++ frontend; GNU-like)   |
 | ld64       | Apple ld64                                  |
 | ld64.lld   | The LLVM linker, with the ld64 interface    |
 | link       | MSVC linker                                 |
@@ -76,7 +77,6 @@ These are return values of the `get_linker_id` method in a compiler object.
 | ccomp      | CompCert used as the linker driver          |
 | mwldarm    | The Metrowerks Linker with the ARM interface, used with mwccarm only |
 | mwldeppc   | The Metrowerks Linker with the PowerPC interface, used with mwcceppc only |
-| zig        | The Zig linker                              |
 
 For languages that don't have separate dynamic linkers such as C# and Java, the
 `get_linker_id` will return the compiler name.

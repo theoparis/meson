@@ -913,7 +913,7 @@ class LLVMDynamicLinker(GnuLikeDynamicLinkerMixin, PosixDynamicLinkerMixin, Dyna
 
 
 class ZigDynamicLinker(LLVMDynamicLinker):
-    id = 'zig'
+    id = 'ld.zig'
 
     def get_thinlto_cache_args(self, path: str) -> T.List[str]:
         return []
