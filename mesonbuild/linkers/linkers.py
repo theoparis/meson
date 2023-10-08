@@ -733,8 +733,8 @@ class GnuLikeDynamicLinkerMixin(DynamicLinkerBase):
         # ...instead of just one single looooong option, like this:
         #
         #   -Wl,-rpath-link,/path/to/folder1:/path/to/folder2:...
-        for p in rpath_paths:
-            args.extend(self._apply_prefix('-rpath-link,' + os.path.join(build_dir, p)))
+        #for p in rpath_paths:
+            #args.extend(self._apply_prefix('-rpath-link,' + os.path.join(build_dir, p)))
 
         return (args, rpath_dirs_to_remove)
 
