@@ -30,6 +30,7 @@ if T.TYPE_CHECKING:
     from ..cmake import CMakeTarget
     from ..environment import Environment
     from ..envconfig import MachineInfo
+    from ..interpreter.type_checking import PkgConfigDefineType
 
 class CMakeInfo(T.NamedTuple):
     module_paths: T.List[str]
@@ -225,7 +226,7 @@ class CMakeDependency(ExternalDependency):
         module_paths = [x for x in module_paths if os.path.isdir(x)]
         archs = temp_parser.get_cmake_var('MESON_ARCH_LIST')
 
-        common_paths = ['lib', 'lib32', 'lib64', 'libx32', 'share']
+        common_paths = ['lib', 'lib32', 'lib64', 'libx32', 'share', '']
         for i in archs:
             common_paths += [os.path.join('lib', i)]
 
@@ -632,7 +633,7 @@ class CMakeDependency(ExternalDependency):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
+                     pkgconfig_define: PkgConfigDefineType = None) -> str:
         if cmake and self.traceparser is not None:
             try:
                 v = self.traceparser.vars[cmake]
@@ -652,3 +653,19 @@ class CMakeDependency(ExternalDependency):
         if default_value is not None:
             return default_value
         raise DependencyException(f'Could not get cmake variable and no default provided for {self!r}')
+
+
+class CMakeDependencyFactory:
+
+    def __init__(self, name: T.Optional[str] = None, modules: T.Optional[T.List[str]] = None):
+        self.name = name
+        self.modules = modules
+
+    def __call__(self, name: str, env: Environment, kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None, force_use_global_compilers: bool = False) -> CMakeDependency:
+        if self.modules:
+            kwargs['modules'] = self.modules
+        return CMakeDependency(self.name or name, env, kwargs, language, force_use_global_compilers)
+
+    @staticmethod
+    def log_tried() -> str:
+        return CMakeDependency.log_tried()

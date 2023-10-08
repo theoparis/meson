@@ -128,10 +128,12 @@ set in the cross file.
 | sh4                 | SuperH SH-4              |
 | sparc               | 32 bit SPARC             |
 | sparc64             | SPARC v9 processor       |
+| sw_64               | 64 bit sunway processor  |
 | wasm32              | 32 bit Webassembly       |
 | wasm64              | 64 bit Webassembly       |
 | x86                 | 32 bit x86 processor     |
 | x86_64              | 64 bit x86 processor     |
+
 
 Any cpu family not listed in the above list is not guaranteed to
 remain stable in future releases.
@@ -376,6 +378,26 @@ machine](#Environment-variables-per-machine) section for details.
 
 *The old environment variables are still supported, but are deprecated
 and will be removed in a future version of Meson.*
+
+*changed in 1.3.0* Paths with spaces were split unconditionally to extract
+components such as the [path to Ccache](Feature-autodetection.md#ccache),
+intrinsic compiler flags like `-m32` or `--target`, etc. This broke passing
+a hardcoded compiler path to CMake subprojects. To work around this, paths
+must be wrapped with double quotes:
+
+```bash
+export CC='"C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.34.31933/bin/Hostx64/x64/cl.exe"'
+```
+
+You can also set the values through [machine files](Machine-files.md#binaries).
+
+*New in 1.3.0* Paths that point to an existing executable no longer need
+wrapping:
+
+```bash
+export CC='C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.34.31933/bin/Hostx64/x64/cl.exe'
+```
+
 
 ## Environment variables per machine
 

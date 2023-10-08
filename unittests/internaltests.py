@@ -549,11 +549,14 @@ class InternalTests(unittest.TestCase):
         if platform != 'openbsd':
             return
         with tempfile.TemporaryDirectory() as tmpdir:
-            for i in ['libfoo.so.6.0', 'libfoo.so.5.0', 'libfoo.so.54.0', 'libfoo.so.66a.0b', 'libfoo.so.70.0.so.1']:
+            for i in ['libfoo.so.6.0', 'libfoo.so.5.0', 'libfoo.so.54.0', 'libfoo.so.66a.0b', 'libfoo.so.70.0.so.1',
+                      'libbar.so.7.10', 'libbar.so.7.9', 'libbar.so.7.9.3']:
                 libpath = Path(tmpdir) / i
                 libpath.write_text('', encoding='utf-8')
             found = cc._find_library_real('foo', env, [tmpdir], '', LibType.PREFER_SHARED, lib_prefix_warning=True)
             self.assertEqual(os.path.basename(found[0]), 'libfoo.so.54.0')
+            found = cc._find_library_real('bar', env, [tmpdir], '', LibType.PREFER_SHARED, lib_prefix_warning=True)
+            self.assertEqual(os.path.basename(found[0]), 'libbar.so.7.10')
 
     def test_find_library_patterns(self):
         '''
@@ -1017,7 +1020,7 @@ class InternalTests(unittest.TestCase):
 
         schema = json.loads(Path('data/test.schema.json').read_text(encoding='utf-8'))
 
-        errors = []  # type: T.Tuple[str, Exception]
+        errors: T.List[T.Tuple[Path, Exception]] = []
         for p in Path('test cases').glob('**/test.json'):
             try:
                 validate(json.loads(p.read_text(encoding='utf-8')), schema=schema)

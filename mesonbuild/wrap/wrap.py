@@ -45,6 +45,9 @@ from .. import mesonlib
 
 if T.TYPE_CHECKING:
     import http.client
+    from typing_extensions import Literal
+
+    Method = Literal['meson', 'cmake']
 
 try:
     # Importing is just done to check if SSL exists, so all warnings
@@ -289,7 +292,7 @@ class Resolver:
 
     def __post_init__(self) -> None:
         self.subdir_root = os.path.join(self.source_dir, self.subdir)
-        self.cachedir = os.path.join(self.subdir_root, 'packagecache')
+        self.cachedir = os.environ.get('MESON_PACKAGE_CACHE_DIR') or os.path.join(self.subdir_root, 'packagecache')
         self.wraps: T.Dict[str, PackageDefinition] = {}
         self.netrc: T.Optional[netrc] = None
         self.provided_deps: T.Dict[str, PackageDefinition] = {}
@@ -406,7 +409,7 @@ class Resolver:
                 return wrap_name
         return None
 
-    def resolve(self, packagename: str, method: str) -> str:
+    def resolve(self, packagename: str, force_method: T.Optional[Method] = None) -> T.Tuple[str, Method]:
         self.packagename = packagename
         self.directory = packagename
         self.wrap = self.wraps.get(packagename)
@@ -443,17 +446,28 @@ class Resolver:
             self.dirname = self.wrap.filename
         rel_path = os.path.relpath(self.dirname, self.source_dir)
 
-        if method == 'meson':
-            buildfile = os.path.join(self.dirname, 'meson.build')
-        elif method == 'cmake':
-            buildfile = os.path.join(self.dirname, 'CMakeLists.txt')
-        else:
-            raise WrapException('Only the methods "meson" and "cmake" are supported')
+        # Map each supported method to a file that must exist at the root of source tree.
+        methods_map: T.Dict[Method, str] = {
+            'meson': 'meson.build',
+            'cmake': 'CMakeLists.txt',
+        }
+
+        # Check if this wrap forces a specific method, use meson otherwise.
+        method = T.cast('T.Optional[Method]', self.wrap.values.get('method', force_method))
+        if method and method not in methods_map:
+            allowed_methods = ', '.join(methods_map.keys())
+            raise WrapException(f'Wrap method {method!r} is not supported, must be one of: {allowed_methods}')
+        if force_method and method != force_method:
+            raise WrapException(f'Wrap method is {method!r} but we are trying to configure it with {force_method}')
+        method = method or 'meson'
+
+        def has_buildfile() -> bool:
+            return os.path.exists(os.path.join(self.dirname, methods_map[method]))
 
         # The directory is there and has meson.build? Great, use it.
-        if os.path.exists(buildfile):
+        if has_buildfile():
             self.validate()
-            return rel_path
+            return rel_path, method
 
         # Check if the subproject is a git submodule
         self.resolve_git_submodule()
@@ -462,7 +476,17 @@ class Resolver:
             if not os.path.isdir(self.dirname):
                 raise WrapException('Path already exists but is not a directory')
         else:
-            if self.wrap.type == 'file':
+            # Check first if we have the extracted directory in our cache. This can
+            # happen for example when MESON_PACKAGE_CACHE_DIR=/usr/share/cargo/registry
+            # on distros that ships Rust source code.
+            # TODO: We don't currently clone git repositories into the cache
+            # directory, but we should to avoid cloning multiple times the same
+            # repository. In that case, we could do something smarter than
+            # copy_tree() here.
+            cached_directory = os.path.join(self.cachedir, self.directory)
+            if os.path.isdir(cached_directory):
+                self.copy_tree(cached_directory, self.dirname)
+            elif self.wrap.type == 'file':
                 self.get_file()
             else:
                 self.check_can_download()
@@ -481,16 +505,14 @@ class Resolver:
                 windows_proof_rmtree(self.dirname)
                 raise
 
-        # A meson.build or CMakeLists.txt file is required in the directory
-        if not os.path.exists(buildfile):
-            raise WrapException(f'Subproject exists but has no {os.path.basename(buildfile)} file')
+        if not has_buildfile():
+            raise WrapException(f'Subproject exists but has no {methods_map[method]} file.')
 
         # At this point, the subproject has been successfully resolved for the
         # first time so save off the hash of the entire wrap file for future
         # reference.
         self.wrap.update_hash_cache(self.dirname)
-
-        return rel_path
+        return rel_path, method
 
     def check_can_download(self) -> None:
         # Don't download subproject data based on wrap file if requested.
@@ -568,12 +590,6 @@ class Resolver:
             revno = self.wrap.get('revision')
             verbose_git(['fetch', *depth_option, 'origin', revno], self.dirname, check=True)
             verbose_git(checkout_cmd, self.dirname, check=True)
-            if self.wrap.values.get('clone-recursive', '').lower() == 'true':
-                verbose_git(['submodule', 'update', '--init', '--checkout',
-                             '--recursive', *depth_option], self.dirname, check=True)
-            push_url = self.wrap.values.get('push-url')
-            if push_url:
-                verbose_git(['remote', 'set-url', '--push', 'origin', push_url], self.dirname, check=True)
         else:
             if not is_shallow:
                 verbose_git(['clone', self.wrap.get('url'), self.directory], self.subdir_root, check=True)
@@ -587,12 +603,12 @@ class Resolver:
                     args += ['--branch', revno]
                 args += [self.wrap.get('url'), self.directory]
                 verbose_git(args, self.subdir_root, check=True)
-            if self.wrap.values.get('clone-recursive', '').lower() == 'true':
-                verbose_git(['submodule', 'update', '--init', '--checkout', '--recursive', *depth_option],
-                            self.dirname, check=True)
-            push_url = self.wrap.values.get('push-url')
-            if push_url:
-                verbose_git(['remote', 'set-url', '--push', 'origin', push_url], self.dirname, check=True)
+        if self.wrap.values.get('clone-recursive', '').lower() == 'true':
+            verbose_git(['submodule', 'update', '--init', '--checkout', '--recursive', *depth_option],
+                        self.dirname, check=True)
+        push_url = self.wrap.values.get('push-url')
+        if push_url:
+            verbose_git(['remote', 'set-url', '--push', 'origin', push_url], self.dirname, check=True)
 
     def validate(self) -> None:
         # This check is only for subprojects with wraps.
@@ -797,15 +813,17 @@ class Resolver:
             if not path.exists():
                 raise WrapException(f'Diff file "{path}" does not exist')
             relpath = os.path.relpath(str(path), self.dirname)
-            if PATCH:
-                # Always pass a POSIX path to patch, because on Windows it's MSYS
-                cmd = [PATCH, '-f', '-p1', '-i', str(Path(relpath).as_posix())]
-            elif GIT:
-                # If the `patch` command is not available, fall back to `git
-                # apply`. The `--work-tree` is necessary in case we're inside a
+            if GIT:
+                # Git is more likely to be available on Windows and more likely
+                # to apply correctly assuming patches are often generated by git.
+                # See https://github.com/mesonbuild/meson/issues/12092.
+                # The `--work-tree` is necessary in case we're inside a
                 # Git repository: by default, Git will try to apply the patch to
                 # the repository root.
                 cmd = [GIT, '--work-tree', '.', 'apply', '-p1', relpath]
+            elif PATCH:
+                # Always pass a POSIX path to patch, because on Windows it's MSYS
+                cmd = [PATCH, '-f', '-p1', '-i', str(Path(relpath).as_posix())]
             else:
                 raise WrapException('Missing "patch" or "git" commands to apply diff files')
 

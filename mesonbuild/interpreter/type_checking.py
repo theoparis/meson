@@ -29,6 +29,8 @@ if T.TYPE_CHECKING:
     from ..mesonlib import EnvInitValueType
 
     _FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
+    PkgConfigDefineType = T.Optional[T.Tuple[str, str]]
+    SourcesVarargsType = T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList, StructuredSources, ExtractedObjects, BuildTarget]]
 
 
 def in_set_validator(choices: T.Set[str]) -> T.Callable[[str], T.Optional[str]]:
@@ -368,6 +370,12 @@ CT_INSTALL_TAG_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
 
 INSTALL_TAG_KW: KwargInfo[T.Optional[str]] = KwargInfo('install_tag', (str, NoneType))
 
+INSTALL_FOLLOW_SYMLINKS: KwargInfo[T.Optional[bool]] = KwargInfo(
+    'follow_symlinks',
+    (bool, NoneType),
+    since='1.3.0',
+)
+
 INSTALL_KW = KwargInfo('install', bool, default=False)
 
 CT_INSTALL_DIR_KW: KwargInfo[T.List[T.Union[str, Literal[False]]]] = KwargInfo(
@@ -450,9 +458,18 @@ LINK_WHOLE_KW: KwargInfo[T.List[T.Union[BothLibraries, StaticLibrary, CustomTarg
     validator=link_whole_validator,
 )
 
-SOURCES_KW: KwargInfo[T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList]]] = KwargInfo(
+DEPENDENCY_SOURCES_KW: KwargInfo[T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList]]] = KwargInfo(
     'sources',
     ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, GeneratedList)),
+    listify=True,
+    default=[],
+)
+
+SOURCES_VARARGS = (str, File, CustomTarget, CustomTargetIndex, GeneratedList, StructuredSources, ExtractedObjects, BuildTarget)
+
+BT_SOURCES_KW: KwargInfo[SourcesVarargsType] = KwargInfo(
+    'sources',
+    ContainerTypeInfo(list, SOURCES_VARARGS),
     listify=True,
     default=[],
 )
@@ -488,6 +505,27 @@ TEST_KWS: T.List[KwargInfo] = [
     KwargInfo('verbose', bool, default=False, since='0.62.0'),
 ]
 
+# Cannot have a default value because we need to check that rust_crate_type and
+# rust_abi are mutually exclusive.
+RUST_CRATE_TYPE_KW: KwargInfo[T.Union[str, None]] = KwargInfo(
+    'rust_crate_type', (str, NoneType),
+    since='0.42.0',
+    since_values={'proc-macro': '0.62.0'},
+    deprecated='1.3.0',
+    deprecated_message='Use rust_abi or rust.proc_macro() instead.',
+    validator=in_set_validator({'bin', 'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}))
+
+RUST_ABI_KW: KwargInfo[T.Union[str, None]] = KwargInfo(
+    'rust_abi', (str, NoneType),
+    since='1.3.0',
+    validator=in_set_validator({'rust', 'c'}))
+
+_VS_MODULE_DEFS_KW: KwargInfo[T.Optional[T.Union[str, File, CustomTarget, CustomTargetIndex]]] = KwargInfo(
+    'vs_module_defs',
+    (str, File, CustomTarget, CustomTargetIndex, NoneType),
+    since_values={CustomTargetIndex: '1.3.0'}
+)
+
 # Applies to all build_target like classes
 _ALL_TARGET_KWS: T.List[KwargInfo] = [
     OVERRIDE_OPTIONS_KW,
@@ -496,6 +534,14 @@ _ALL_TARGET_KWS: T.List[KwargInfo] = [
 # Applies to all build_target classes except jar
 _BUILD_TARGET_KWS: T.List[KwargInfo] = [
     *_ALL_TARGET_KWS,
+    BT_SOURCES_KW,
+    RUST_CRATE_TYPE_KW,
+    KwargInfo(
+        'rust_dependency_map',
+        ContainerTypeInfo(dict, str),
+        default={},
+        since='1.2.0',
+    ),
 ]
 
 def _validate_win_subsystem(value: T.Optional[str]) -> T.Optional[str]:
@@ -550,7 +596,10 @@ _DARWIN_VERSIONS_KW: KwargInfo[T.List[T.Union[str, int]]] = KwargInfo(
 # Arguments exclusive to Executable. These are separated to make integrating
 # them into build_target easier
 _EXCLUSIVE_EXECUTABLE_KWS: T.List[KwargInfo] = [
+    KwargInfo('export_dynamic', (bool, NoneType), since='0.45.0'),
     KwargInfo('gui_app', (bool, NoneType), deprecated='0.56.0', deprecated_message="Use 'win_subsystem' instead"),
+    KwargInfo('implib', (bool, str, NoneType), since='0.42.0'),
+    KwargInfo('pie', (bool, NoneType)),
     KwargInfo(
         'win_subsystem',
         (str, NoneType),
@@ -563,16 +612,26 @@ _EXCLUSIVE_EXECUTABLE_KWS: T.List[KwargInfo] = [
 EXECUTABLE_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_EXECUTABLE_KWS,
+    _VS_MODULE_DEFS_KW.evolve(since='1.3.0', since_values=None),
+]
+
+# Arguments exclusive to library types
+_EXCLUSIVE_LIB_KWS: T.List[KwargInfo] = [
+    RUST_ABI_KW,
 ]
 
 # Arguments exclusive to StaticLibrary. These are separated to make integrating
 # them into build_target easier
-_EXCLUSIVE_STATIC_LIB_KWS: T.List[KwargInfo] = []
+_EXCLUSIVE_STATIC_LIB_KWS: T.List[KwargInfo] = [
+    KwargInfo('prelink', bool, default=False, since='0.57.0'),
+    KwargInfo('pic', (bool, NoneType), since='0.36.0'),
+]
 
 # The total list of arguments used by StaticLibrary
 STATIC_LIB_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_STATIC_LIB_KWS,
+    *_EXCLUSIVE_LIB_KWS,
 ]
 
 # Arguments exclusive to SharedLibrary. These are separated to make integrating
@@ -587,6 +646,8 @@ _EXCLUSIVE_SHARED_LIB_KWS: T.List[KwargInfo] = [
 SHARED_LIB_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_SHARED_LIB_KWS,
+    *_EXCLUSIVE_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments exclusive to SharedModule. These are separated to make integrating
@@ -597,6 +658,8 @@ _EXCLUSIVE_SHARED_MOD_KWS: T.List[KwargInfo] = []
 SHARED_MOD_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_SHARED_MOD_KWS,
+    *_EXCLUSIVE_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments exclusive to JAR. These are separated to make integrating
@@ -610,14 +673,22 @@ _EXCLUSIVE_JAR_KWS: T.List[KwargInfo] = [
 JAR_KWS = [
     *_ALL_TARGET_KWS,
     *_EXCLUSIVE_JAR_KWS,
+    KwargInfo(
+        'sources',
+        ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, GeneratedList, ExtractedObjects, BuildTarget)),
+        listify=True,
+        default=[],
+    )
 ]
 
 # Arguments used by both_library and library
 LIBRARY_KWS = [
     *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_LIB_KWS,
     *_EXCLUSIVE_SHARED_LIB_KWS,
     *_EXCLUSIVE_SHARED_MOD_KWS,
     *_EXCLUSIVE_STATIC_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments used by build_Target
@@ -642,3 +713,11 @@ BUILD_TARGET_KWS = [
         }
     )
 ]
+
+PKGCONFIG_DEFINE_KW: KwargInfo = KwargInfo(
+    'pkgconfig_define',
+    ContainerTypeInfo(list, str, pairs=True),
+    default=[],
+    validator=lambda x: 'must be of length 2 or empty' if len(x) not in {0, 2} else None,
+    convertor=lambda x: tuple(x) if x else None
+)

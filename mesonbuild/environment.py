@@ -157,6 +157,7 @@ def get_llvm_tool_names(tool: str) -> T.List[str]:
     # unless it becomes a stable release.
     suffixes = [
         '', # base (no suffix)
+        '-17',  '17',
         '-16',  '16',
         '-15',  '15',
         '-14',  '14',
@@ -410,6 +411,11 @@ KERNEL_MAPPINGS: T.Mapping[str, str] = {'freebsd': 'freebsd',
 
 def detect_kernel(system: str) -> T.Optional[str]:
     if system == 'sunos':
+        # Solaris 5.10 uname doesn't support the -o switch, and illumos started
+        # with version 5.11 so shortcut the logic to report 'solaris' in such
+        # cases where the version is 5.10 or below.
+        if mesonlib.version_compare(platform.uname().release, '<=5.10'):
+            return 'solaris'
         # This needs to be /usr/bin/uname because gnu-uname could be installed and
         # won't provide the necessary information
         p, out, _ = Popen_safe(['/usr/bin/uname', '-o'])
@@ -747,7 +753,10 @@ class Environment:
         for (name, evar), for_machine in itertools.product(opts, MachineChoice):
             p_env = _get_env_var(for_machine, self.is_cross_build(), evar)
             if p_env is not None:
-                self.binaries[for_machine].binaries.setdefault(name, mesonlib.split_args(p_env))
+                if os.path.exists(p_env):
+                    self.binaries[for_machine].binaries.setdefault(name, [p_env])
+                else:
+                    self.binaries[for_machine].binaries.setdefault(name, mesonlib.split_args(p_env))
 
     def _set_default_properties_from_env(self) -> None:
         """Properties which can also be set from the environment."""

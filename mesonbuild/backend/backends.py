@@ -172,6 +172,7 @@ class InstallDataBase:
     subproject: str
     tag: T.Optional[str] = None
     data_type: T.Optional[str] = None
+    follow_symlinks: T.Optional[bool] = None
 
 @dataclass(eq=False)
 class InstallSymlinkData:
@@ -186,8 +187,9 @@ class InstallSymlinkData:
 class SubdirInstallData(InstallDataBase):
     def __init__(self, path: str, install_path: str, install_path_name: str,
                  install_mode: 'FileMode', exclude: T.Tuple[T.Set[str], T.Set[str]],
-                 subproject: str, tag: T.Optional[str] = None, data_type: T.Optional[str] = None):
-        super().__init__(path, install_path, install_path_name, install_mode, subproject, tag, data_type)
+                 subproject: str, tag: T.Optional[str] = None, data_type: T.Optional[str] = None,
+                 follow_symlinks: T.Optional[bool] = None):
+        super().__init__(path, install_path, install_path_name, install_mode, subproject, tag, data_type, follow_symlinks)
         self.exclude = exclude
 
 
@@ -313,6 +315,20 @@ class Backend:
 
     def get_target_filename_abs(self, target: T.Union[build.Target, build.CustomTargetIndex]) -> str:
         return os.path.join(self.environment.get_build_dir(), self.get_target_filename(target))
+
+    def get_target_debug_filename(self, target: build.BuildTarget) -> T.Optional[str]:
+        assert isinstance(target, build.BuildTarget), target
+        if target.get_debug_filename():
+            debug_filename = target.get_debug_filename()
+            return os.path.join(self.get_target_dir(target), debug_filename)
+        else:
+            return None
+
+    def get_target_debug_filename_abs(self, target: build.BuildTarget) -> T.Optional[str]:
+        assert isinstance(target, build.BuildTarget), target
+        if not target.get_debug_filename():
+            return None
+        return os.path.join(self.environment.get_build_dir(), self.get_target_debug_filename(target))
 
     def get_source_dir_include_args(self, target: build.BuildTarget, compiler: 'Compiler', *, absolute_path: bool = False) -> T.List[str]:
         curdir = target.get_subdir()
@@ -1141,7 +1157,7 @@ class Backend:
 
             if dep.type_name == 'pkgconfig':
                 # If by chance pkg-config knows the bin dir...
-                bindir = dep.get_pkgconfig_variable('bindir', [], default='')
+                bindir = dep.get_variable(pkgconfig='bindir', default_value='')
                 if bindir:
                     results.add(bindir)
                     continue
@@ -1829,10 +1845,8 @@ class Backend:
                     outdir_name = os.path.join('{includedir}', subdir)
 
             for f in h.get_sources():
-                if not isinstance(f, File):
-                    raise MesonException(f'Invalid header type {f!r} can\'t be installed')
                 abspath = f.absolute_path(srcdir, builddir)
-                i = InstallDataBase(abspath, outdir, outdir_name, h.get_custom_install_mode(), h.subproject, tag='devel')
+                i = InstallDataBase(abspath, outdir, outdir_name, h.get_custom_install_mode(), h.subproject, tag='devel', follow_symlinks=h.follow_symlinks)
                 d.headers.append(i)
 
     def generate_man_install(self, d: InstallData) -> None:
@@ -1877,7 +1891,8 @@ class Backend:
                 dstdir_name = os.path.join(subdir_name, dst_name)
                 tag = de.install_tag or self.guess_install_tag(dst_abs)
                 i = InstallDataBase(src_file.absolute_path(srcdir, builddir), dst_abs, dstdir_name,
-                                    de.install_mode, de.subproject, tag=tag, data_type=de.data_type)
+                                    de.install_mode, de.subproject, tag=tag, data_type=de.data_type,
+                                    follow_symlinks=de.follow_symlinks)
                 d.data.append(i)
 
     def generate_symlink_install(self, d: InstallData) -> None:
@@ -1908,7 +1923,8 @@ class Backend:
                 dst_dir = os.path.join(dst_dir, os.path.basename(src_dir))
                 dst_name = os.path.join(dst_name, os.path.basename(src_dir))
             tag = sd.install_tag or self.guess_install_tag(os.path.join(sd.install_dir, 'dummy'))
-            i = SubdirInstallData(src_dir, dst_dir, dst_name, sd.install_mode, sd.exclude, sd.subproject, tag)
+            i = SubdirInstallData(src_dir, dst_dir, dst_name, sd.install_mode, sd.exclude, sd.subproject, tag,
+                                  follow_symlinks=sd.follow_symlinks)
             d.install_subdirs.append(i)
 
     def get_introspection_data(self, target_id: str, target: build.Target) -> T.List['TargetIntrospectionData']:

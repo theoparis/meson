@@ -349,6 +349,8 @@ class VisualStudioLinker(VisualStudioLikeLinker, StaticLinker):
 
     """Microsoft's lib static linker."""
 
+    id = 'lib'
+
     def __init__(self, exelist: T.List[str], machine: str):
         StaticLinker.__init__(self, exelist)
         VisualStudioLikeLinker.__init__(self, machine)
@@ -357,6 +359,8 @@ class VisualStudioLinker(VisualStudioLikeLinker, StaticLinker):
 class IntelVisualStudioLinker(VisualStudioLikeLinker, StaticLinker):
 
     """Intel's xilib static linker."""
+
+    id = 'xilib'
 
     def __init__(self, exelist: T.List[str], machine: str):
         StaticLinker.__init__(self, exelist)
@@ -1268,8 +1272,7 @@ class VisualStudioLikeLinkerMixin(DynamicLinkerBase):
         return self._apply_prefix('/DLL')
 
     def get_debugfile_name(self, targetfile: str) -> str:
-        basename = targetfile.rsplit('.', maxsplit=1)[0]
-        return basename + '.pdb'
+        return targetfile
 
     def get_debugfile_args(self, targetfile: str) -> T.List[str]:
         return self._apply_prefix(['/DEBUG', '/PDB:' + self.get_debugfile_name(targetfile)])

@@ -40,6 +40,7 @@ import time
 import typing as T
 import xml.etree.ElementTree as ET
 import collections
+import importlib.util
 
 from mesonbuild import build
 from mesonbuild import environment
@@ -133,11 +134,11 @@ class InstalledFile:
         self.path = raw['file']
         self.typ = raw['type']
         self.platform = raw.get('platform', None)
-        self.language = raw.get('language', 'c')  # type: str
+        self.language = raw.get('language', 'c')
 
-        version = raw.get('version', '')  # type: str
+        version = raw.get('version', '')
         if version:
-            self.version = version.split('.')  # type: T.List[str]
+            self.version = version.split('.')
         else:
             # split on '' will return [''], we want an empty list though
             self.version = []
@@ -169,7 +170,7 @@ class InstalledFile:
             return None
 
         # Handle the different types
-        if self.typ in {'py_implib', 'py_limited_implib', 'python_lib', 'python_limited_lib', 'python_file'}:
+        if self.typ in {'py_implib', 'py_limited_implib', 'python_lib', 'python_limited_lib', 'python_file', 'python_bytecode'}:
             val = p.as_posix()
             val = val.replace('@PYTHON_PLATLIB@', python.platlib)
             val = val.replace('@PYTHON_PURELIB@', python.purelib)
@@ -196,7 +197,9 @@ class InstalledFile:
                     return p.with_suffix('.dll.a')
                 else:
                     return None
-        elif self.typ in {'file', 'dir'}:
+            if self.typ == 'python_bytecode':
+                return p.parent / importlib.util.cache_from_source(p.name)
+        elif self.typ in {'file', 'dir', 'link'}:
             return p
         elif self.typ == 'shared_lib':
             if env.machines.host.is_windows() or env.machines.host.is_cygwin():
@@ -260,6 +263,11 @@ class InstalledFile:
             if not abs_p.is_dir():
                 raise RuntimeError(f'{p} is not a directory')
             return [x.relative_to(installdir) for x in abs_p.rglob('*') if x.is_file() or x.is_symlink()]
+        elif self.typ == 'link':
+            abs_p = installdir / p
+            if not abs_p.is_symlink():
+                raise RuntimeError(f'{p} is not a symlink')
+            return [p]
         else:
             return [p]
 
@@ -272,9 +280,9 @@ class TestDef:
         self.args = args
         self.skip = skip
         self.env = os.environ.copy()
-        self.installed_files = []  # type: T.List[InstalledFile]
-        self.do_not_set_opts = []  # type: T.List[str]
-        self.stdout = [] # type: T.List[T.Dict[str, str]]
+        self.installed_files: T.List[InstalledFile] = []
+        self.do_not_set_opts: T.List[str] = []
+        self.stdout: T.List[T.Dict[str, str]] = []
         self.skip_category = skip_category
         self.skip_expected = False
 
@@ -391,7 +399,7 @@ def platform_fix_name(fname: str, canonical_compiler: str, env: environment.Envi
 
 def validate_install(test: TestDef, installdir: Path, env: environment.Environment) -> str:
     ret_msg = ''
-    expected_raw = []  # type: T.List[Path]
+    expected_raw: T.List[Path] = []
     for i in test.installed_files:
         try:
             expected_raw += i.get_paths(host_c_compiler, env, installdir)
@@ -820,7 +828,7 @@ def load_test_json(t: TestDef, stdout_mandatory: bool, skip_category: bool = Fal
         test_def = json.loads(test_def_file.read_text(encoding='utf-8'))
 
     # Handle additional environment variables
-    env = {}  # type: T.Dict[str, str]
+    env: T.Dict[str, str] = {}
     if 'env' in test_def:
         assert isinstance(test_def['env'], dict)
         env = test_def['env']
@@ -830,7 +838,7 @@ def load_test_json(t: TestDef, stdout_mandatory: bool, skip_category: bool = Fal
             env[key] = val
 
     # Handle installed files
-    installed = []  # type: T.List[InstalledFile]
+    installed: T.List[InstalledFile] = []
     if 'installed' in test_def:
         installed = [InstalledFile(x) for x in test_def['installed']]
 
@@ -840,7 +848,7 @@ def load_test_json(t: TestDef, stdout_mandatory: bool, skip_category: bool = Fal
         raise RuntimeError(f"{test_def_file} must contain a non-empty stdout key")
 
     # Handle the do_not_set_opts list
-    do_not_set_opts = test_def.get('do_not_set_opts', [])  # type: T.List[str]
+    do_not_set_opts: T.List[str] = test_def.get('do_not_set_opts', [])
 
     (t.skip, t.skip_expected) = _skip_keys(test_def)
 
@@ -864,12 +872,12 @@ def load_test_json(t: TestDef, stdout_mandatory: bool, skip_category: bool = Fal
     new_opt_list: T.List[T.List[T.Tuple[str, str, bool, bool]]]
 
     # 'matrix; entry is present, so build multiple tests from matrix definition
-    opt_list = []  # type: T.List[T.List[T.Tuple[str, str, bool, bool]]]
+    opt_list: T.List[T.List[T.Tuple[str, str, bool, bool]]] = []
     matrix = test_def['matrix']
     assert "options" in matrix
     for key, val in matrix["options"].items():
         assert isinstance(val, list)
-        tmp_opts = []  # type: T.List[T.Tuple[str, str, bool, bool]]
+        tmp_opts: T.List[T.Tuple[str, str, bool, bool]] = []
         for i in val:
             assert isinstance(i, dict)
             assert "val" in i
@@ -938,6 +946,8 @@ def gather_tests(testdir: Path, stdout_mandatory: bool, only: T.List[str], skip_
     for t in testdir.iterdir():
         # Filter non-tests files (dot files, etc)
         if not t.is_dir() or t.name.startswith('.'):
+            continue
+        if t.name in {'18 includedirxyz'}:
             continue
         if only and not any(t.name.startswith(prefix) for prefix in only):
             continue

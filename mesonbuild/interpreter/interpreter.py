@@ -25,7 +25,7 @@ from ..wrap import wrap, WrapMode
 from .. import mesonlib
 from ..mesonlib import (EnvironmentVariables, ExecutableSerialisation, MesonBugException, MesonException, HoldableObject,
                         FileMode, MachineChoice, OptionKey, listify,
-                        extract_as_list, has_path_sep, PerMachine)
+                        extract_as_list, has_path_sep, path_is_in_root, PerMachine)
 from ..programs import ExternalProgram, NonExistingExternalProgram
 from ..dependencies import Dependency
 from ..depfile import DepFile
@@ -37,6 +37,7 @@ from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, Feat
 from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..interpreterbase import stringifyUserArguments
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
+from ..optinterpreter import optname_regex
 
 from . import interpreterobjects as OBJ
 from . import compiler as compilerOBJ
@@ -77,6 +78,7 @@ from .type_checking import (
     INSTALL_KW,
     INSTALL_DIR_KW,
     INSTALL_MODE_KW,
+    INSTALL_FOLLOW_SYMLINKS,
     LINK_WITH_KW,
     LINK_WHOLE_KW,
     CT_INSTALL_TAG_KW,
@@ -87,7 +89,8 @@ from .type_checking import (
     REQUIRED_KW,
     SHARED_LIB_KWS,
     SHARED_MOD_KWS,
-    SOURCES_KW,
+    DEPENDENCY_SOURCES_KW,
+    SOURCES_VARARGS,
     STATIC_LIB_KWS,
     VARIABLES_KW,
     TEST_KWS,
@@ -113,12 +116,11 @@ import copy
 if T.TYPE_CHECKING:
     import argparse
 
-    from typing_extensions import Literal
-
     from . import kwargs as kwtypes
     from ..backend.backends import Backend
     from ..interpreterbase.baseobjects import InterpreterObject, TYPE_var, TYPE_kwargs
     from ..programs import OverrideProgram
+    from .type_checking import SourcesVarargsType
 
     # Input source types passed to Targets
     SourceInputs = T.Union[mesonlib.File, build.GeneratedList, build.BuildTarget, build.BothLibraries,
@@ -372,12 +374,10 @@ class Interpreter(InterpreterBase, HoldableObject):
                            'error': self.func_error,
                            'executable': self.func_executable,
                            'files': self.func_files,
-                           'find_library': self.func_find_library,
                            'find_program': self.func_find_program,
                            'generator': self.func_generator,
                            'get_option': self.func_get_option,
                            'get_variable': self.func_get_variable,
-                           'gettext': self.func_gettext,
                            'import': self.func_import,
                            'include_directories': self.func_include_directories,
                            'install_data': self.func_install_data,
@@ -538,7 +538,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             assert isinstance(kw, mparser.IdNode), 'for mypy'
             if kw.value == 'meson_version':
                 # mypy does not understand "and isinstance"
-                if isinstance(val, mparser.StringNode):
+                if isinstance(val, mparser.BaseStringNode):
                     self.handle_meson_version(val.value, val)
 
     def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
@@ -553,7 +553,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if f.is_built:
                 return
             f = os.path.normpath(f.relative_name())
-        elif os.path.isfile(f) and not f.startswith('/dev'):
+        elif os.path.isfile(f) and not f.startswith('/dev/'):
             srcdir = Path(self.environment.get_source_dir())
             builddir = Path(self.environment.get_build_dir())
             try:
@@ -687,7 +687,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         INCLUDE_DIRECTORIES,
         LINK_WITH_KW,
         LINK_WHOLE_KW.evolve(since='0.46.0'),
-        SOURCES_KW,
+        DEPENDENCY_SOURCES_KW,
         KwargInfo('extra_files', ContainerTypeInfo(list, (mesonlib.File, str)), listify=True, default=[], since='1.2.0'),
         VARIABLES_KW.evolve(since='0.54.0', since_values={list: '0.56.0'}),
         KwargInfo('version', (str, NoneType)),
@@ -848,9 +848,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                           self.environment.get_build_command() + ['introspect'],
                           in_builddir=in_builddir, check=check, capture=capture)
 
-    def func_gettext(self, nodes, args, kwargs):
-        raise InterpreterException('Gettext() function has been moved to module i18n. Import it and use i18n.gettext() instead')
-
     def func_option(self, nodes, args, kwargs):
         raise InterpreterException('Tried to call option() in build description file. All options must be in the option file.')
 
@@ -869,7 +866,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             'options': None,
             'cmake_options': [],
         }
-        return self.do_subproject(args[0], 'meson', kw)
+        return self.do_subproject(args[0], kw)
 
     def disabled_subproject(self, subp_name: str, disabled_feature: T.Optional[str] = None,
                             exception: T.Optional[Exception] = None) -> SubprojectHolder:
@@ -878,7 +875,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.subprojects[subp_name] = sub
         return sub
 
-    def do_subproject(self, subp_name: str, method: Literal['meson', 'cmake'], kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
+    def do_subproject(self, subp_name: str, kwargs: kwtypes.DoSubproject, force_method: T.Optional[wrap.Method] = None) -> SubprojectHolder:
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
             mlog.log('Subproject', mlog.bold(subp_name), ':', 'skipped: feature', mlog.bold(feature), 'disabled')
@@ -914,7 +911,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         r = self.environment.wrap_resolver
         try:
-            subdir = r.resolve(subp_name, method)
+            subdir, method = r.resolve(subp_name, force_method)
         except wrap.WrapException as e:
             if not required:
                 mlog.log(e)
@@ -922,7 +919,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                 return self.disabled_subproject(subp_name, exception=e)
             raise e
 
-        subdir_abs = os.path.join(self.environment.get_source_dir(), subdir)
         os.makedirs(os.path.join(self.build.environment.get_build_dir(), subdir), exist_ok=True)
         self.global_args_frozen = True
 
@@ -936,7 +932,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if method == 'meson':
                 return self._do_subproject_meson(subp_name, subdir, default_options, kwargs)
             elif method == 'cmake':
-                return self._do_subproject_cmake(subp_name, subdir, subdir_abs, default_options, kwargs)
+                return self._do_subproject_cmake(subp_name, subdir, default_options, kwargs)
             else:
                 raise mesonlib.MesonBugException(f'The method {method} is invalid for the subproject {subp_name}')
         # Invalid code is always an error
@@ -957,12 +953,24 @@ class Interpreter(InterpreterBase, HoldableObject):
                              kwargs: kwtypes.DoSubproject,
                              ast: T.Optional[mparser.CodeBlockNode] = None,
                              build_def_files: T.Optional[T.List[str]] = None,
-                             is_translated: bool = False,
                              relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None) -> SubprojectHolder:
         with mlog.nested(subp_name):
+            if ast:
+                # Debug print the generated meson file
+                from ..ast import AstIndentationGenerator, AstPrinter
+                printer = AstPrinter(update_ast_line_nos=True)
+                ast.accept(AstIndentationGenerator())
+                ast.accept(printer)
+                printer.post_process()
+                meson_filename = os.path.join(self.build.environment.get_build_dir(), subdir, 'meson.build')
+                with open(meson_filename, "w", encoding='utf-8') as f:
+                    f.write(printer.result)
+                mlog.log('Generated Meson AST:', meson_filename)
+                mlog.cmd_ci_include(meson_filename)
+
             new_build = self.build.copy()
             subi = Interpreter(new_build, self.backend, subp_name, subdir, self.subproject_dir,
-                               default_options, ast=ast, is_translated=is_translated,
+                               default_options, ast=ast, is_translated=(ast is not None),
                                relaxations=relaxations,
                                user_defined_options=self.user_defined_options)
             # Those lists are shared by all interpreters. That means that
@@ -1001,54 +1009,31 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.build.subprojects[subp_name] = subi.project_version
         return self.subprojects[subp_name]
 
-    def _do_subproject_cmake(self, subp_name: str, subdir: str, subdir_abs: str,
+    def _do_subproject_cmake(self, subp_name: str, subdir: str,
                              default_options: T.Dict[OptionKey, str],
                              kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
         from ..cmake import CMakeInterpreter
         with mlog.nested(subp_name):
-            new_build = self.build.copy()
             prefix = self.coredata.options[OptionKey('prefix')].value
 
             from ..modules.cmake import CMakeSubprojectOptions
-            options = kwargs['options'] or CMakeSubprojectOptions()
-            cmake_options = kwargs['cmake_options'] + options.cmake_options
-            cm_int = CMakeInterpreter(new_build, Path(subdir), Path(subdir_abs), Path(prefix), new_build.environment, self.backend)
+            options = kwargs.get('options') or CMakeSubprojectOptions()
+            cmake_options = kwargs.get('cmake_options', []) + options.cmake_options
+            cm_int = CMakeInterpreter(Path(subdir), Path(prefix), self.build.environment, self.backend)
             cm_int.initialise(cmake_options)
             cm_int.analyse()
 
             # Generate a meson ast and execute it with the normal do_subproject_meson
             ast = cm_int.pretend_to_be_meson(options.target_options)
-
-            mlog.log()
-            with mlog.nested('cmake-ast'):
-                mlog.log('Processing generated meson AST')
-
-                # Debug print the generated meson file
-                from ..ast import AstIndentationGenerator, AstPrinter
-                printer = AstPrinter(update_ast_line_nos=True)
-                ast.accept(AstIndentationGenerator())
-                ast.accept(printer)
-                printer.post_process()
-                meson_filename = os.path.join(self.build.environment.get_build_dir(), subdir, 'meson.build')
-                with open(meson_filename, "w", encoding='utf-8') as f:
-                    f.write(printer.result)
-
-                mlog.log('Build file:', meson_filename)
-                mlog.cmd_ci_include(meson_filename)
-                mlog.log()
-
             result = self._do_subproject_meson(
                     subp_name, subdir, default_options,
                     kwargs, ast,
                     [str(f) for f in cm_int.bs_files],
-                    is_translated=True,
                     relaxations={
                         InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES,
                     }
             )
             result.cm_interpreter = cm_int
-
-        mlog.log()
         return result
 
     def get_option_internal(self, optname: str) -> coredata.UserOption:
@@ -1095,6 +1080,10 @@ class Interpreter(InterpreterBase, HoldableObject):
             raise InterpreterException('Having a colon in option name is forbidden, '
                                        'projects are not allowed to directly access '
                                        'options of other subprojects.')
+
+        if optname_regex.search(optname.split('.', maxsplit=1)[-1]) is not None:
+            raise InterpreterException(f'Invalid option name {optname!r}')
+
         opt = self.get_option_internal(optname)
         if isinstance(opt, coredata.UserFeatureOption):
             opt.name = optname
@@ -1445,23 +1434,28 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_exception(self, node, args, kwargs):
         raise RuntimeError('unit test traceback :)')
 
-    @noKwargs
     @typed_pos_args('expect_error', str)
+    @typed_kwargs(
+        'expect_error',
+        KwargInfo('how', str, default='literal', validator=in_set_validator({'literal', 're'})),
+    )
     def func_expect_error(self, node: mparser.BaseNode, args: T.Tuple[str], kwargs: TYPE_kwargs) -> ContextManagerObject:
         class ExpectErrorObject(ContextManagerObject):
-            def __init__(self, msg: str, subproject: str) -> None:
+            def __init__(self, msg: str, how: str, subproject: str) -> None:
                 super().__init__(subproject)
                 self.msg = msg
+                self.how = how
 
             def __exit__(self, exc_type, exc_val, exc_tb):
                 if exc_val is None:
                     raise InterpreterException('Expecting an error but code block succeeded')
                 if isinstance(exc_val, mesonlib.MesonException):
                     msg = str(exc_val)
-                    if msg != self.msg:
+                    if (self.how == 'literal' and self.msg != msg) or \
+                       (self.how == 're' and not re.match(self.msg, msg)):
                         raise InterpreterException(f'Expecting error {self.msg!r} but got {msg!r}')
                     return True
-        return ExpectErrorObject(args[0], self.subproject)
+        return ExpectErrorObject(args[0], kwargs['how'], self.subproject)
 
     def add_languages(self, args: T.List[str], required: bool, for_machine: MachineChoice) -> bool:
         success = self.add_languages_for(args, required, for_machine)
@@ -1726,7 +1720,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             'cmake_options': [],
             'options': None,
         }
-        self.do_subproject(fallback, 'meson', sp_kwargs)
+        self.do_subproject(fallback, sp_kwargs)
         return self.program_from_overrides(args, extra_info)
 
     @typed_pos_args('find_program', varargs=(str, mesonlib.File), min_varargs=1)
@@ -1753,12 +1747,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         return self.find_program_impl(args[0], kwargs['native'], default_options=default_options, required=required,
                                       silent=False, wanted=kwargs['version'],
                                       search_dirs=search_dirs)
-
-    def func_find_library(self, node, args, kwargs):
-        raise InvalidCode('find_library() is removed, use meson.get_compiler(\'name\').find_library() instead.\n'
-                          'Look here for documentation: http://mesonbuild.com/Reference-manual.html#compiler-object\n'
-                          'Look here for example: http://mesonbuild.com/howtox.html#add-math-library-lm-portably\n'
-                          )
 
     # When adding kwargs, please check if they make sense in dependencies.get_dep_identifier()
     @FeatureNewKwargs('dependency', '0.57.0', ['cmake_package_version'])
@@ -1818,55 +1806,54 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_disabler(self, node, args, kwargs):
         return Disabler()
 
-    @FeatureNewKwargs('executable', '0.42.0', ['implib'])
     @permittedKwargs(build.known_exe_kwargs)
-    @typed_pos_args('executable', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('executable', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('executable', *EXECUTABLE_KWS, allow_unknown=True)
     def func_executable(self, node: mparser.BaseNode,
-                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        args: T.Tuple[str, SourcesVarargsType],
                         kwargs: kwtypes.Executable) -> build.Executable:
         return self.build_target(node, args, kwargs, build.Executable)
 
     @permittedKwargs(build.known_stlib_kwargs)
-    @typed_pos_args('static_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('static_library', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('static_library', *STATIC_LIB_KWS, allow_unknown=True)
     def func_static_lib(self, node: mparser.BaseNode,
-                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        args: T.Tuple[str, SourcesVarargsType],
                         kwargs: kwtypes.StaticLibrary) -> build.StaticLibrary:
         return self.build_target(node, args, kwargs, build.StaticLibrary)
 
     @permittedKwargs(build.known_shlib_kwargs)
-    @typed_pos_args('shared_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('shared_library', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('shared_library', *SHARED_LIB_KWS, allow_unknown=True)
     def func_shared_lib(self, node: mparser.BaseNode,
-                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        args: T.Tuple[str, SourcesVarargsType],
                         kwargs: kwtypes.SharedLibrary) -> build.SharedLibrary:
         holder = self.build_target(node, args, kwargs, build.SharedLibrary)
         holder.shared_library_only = True
         return holder
 
     @permittedKwargs(known_library_kwargs)
-    @typed_pos_args('both_libraries', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('both_libraries', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('both_libraries', *LIBRARY_KWS, allow_unknown=True)
     def func_both_lib(self, node: mparser.BaseNode,
-                      args: T.Tuple[str, T.List[BuildTargetSource]],
+                      args: T.Tuple[str, SourcesVarargsType],
                       kwargs: kwtypes.Library) -> build.BothLibraries:
         return self.build_both_libraries(node, args, kwargs)
 
     @FeatureNew('shared_module', '0.37.0')
     @permittedKwargs(build.known_shmod_kwargs)
-    @typed_pos_args('shared_module', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('shared_module', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('shared_module', *SHARED_MOD_KWS, allow_unknown=True)
     def func_shared_module(self, node: mparser.BaseNode,
-                           args: T.Tuple[str, T.List[BuildTargetSource]],
+                           args: T.Tuple[str, SourcesVarargsType],
                            kwargs: kwtypes.SharedModule) -> build.SharedModule:
         return self.build_target(node, args, kwargs, build.SharedModule)
 
     @permittedKwargs(known_library_kwargs)
-    @typed_pos_args('library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('library', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('library', *LIBRARY_KWS, allow_unknown=True)
     def func_library(self, node: mparser.BaseNode,
-                     args: T.Tuple[str, T.List[BuildTargetSource]],
+                     args: T.Tuple[str, SourcesVarargsType],
                      kwargs: kwtypes.Library) -> build.Executable:
         return self.build_library(node, args, kwargs)
 
@@ -1880,10 +1867,10 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     @FeatureNewKwargs('build_target', '0.40.0', ['link_whole', 'override_options'])
     @permittedKwargs(known_build_target_kwargs)
-    @typed_pos_args('build_target', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    @typed_pos_args('build_target', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('build_target', *BUILD_TARGET_KWS, allow_unknown=True)
     def func_build_target(self, node: mparser.BaseNode,
-                          args: T.Tuple[str, T.List[BuildTargetSource]],
+                          args: T.Tuple[str, SourcesVarargsType],
                           kwargs: kwtypes.BuildTarget
                           ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedLibrary,
                                        build.SharedModule, build.BothLibraries, build.Jar]:
@@ -2244,6 +2231,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         KwargInfo('subdir', (str, NoneType)),
         INSTALL_MODE_KW.evolve(since='0.47.0'),
         INSTALL_DIR_KW,
+        INSTALL_FOLLOW_SYMLINKS,
     )
     def func_install_headers(self, node: mparser.BaseNode,
                              args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2270,7 +2258,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         for childdir in dirs:
             h = build.Headers(dirs[childdir], os.path.join(install_subdir, childdir), kwargs['install_dir'],
-                              install_mode, self.subproject)
+                              install_mode, self.subproject,
+                              follow_symlinks=kwargs['follow_symlinks'])
             ret_headers.append(h)
             self.build.headers.append(h)
 
@@ -2465,6 +2454,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         INSTALL_TAG_KW.evolve(since='0.60.0'),
         INSTALL_DIR_KW,
         PRESERVE_PATH_KW.evolve(since='0.64.0'),
+        INSTALL_FOLLOW_SYMLINKS,
     )
     def func_install_data(self, node: mparser.BaseNode,
                           args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2492,15 +2482,16 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
         return self.install_data_impl(sources, install_dir, install_mode, rename, kwargs['install_tag'],
-                                      preserve_path=kwargs['preserve_path'])
+                                      preserve_path=kwargs['preserve_path'],
+                                      follow_symlinks=kwargs['follow_symlinks'])
 
     def install_data_impl(self, sources: T.List[mesonlib.File], install_dir: str,
                           install_mode: FileMode, rename: T.Optional[str],
                           tag: T.Optional[str],
                           install_data_type: T.Optional[str] = None,
-                          preserve_path: bool = False) -> build.Data:
+                          preserve_path: bool = False,
+                          follow_symlinks: T.Optional[bool] = None) -> build.Data:
         install_dir_name = install_dir.optname if isinstance(install_dir, P_OBJ.OptionString) else install_dir
-
         dirs = collections.defaultdict(list)
         if preserve_path:
             for file in sources:
@@ -2512,7 +2503,8 @@ class Interpreter(InterpreterBase, HoldableObject):
         ret_data = []
         for childdir, files in dirs.items():
             d = build.Data(files, os.path.join(install_dir, childdir), os.path.join(install_dir_name, childdir),
-                           install_mode, self.subproject, rename, tag, install_data_type)
+                           install_mode, self.subproject, rename, tag, install_data_type,
+                           follow_symlinks)
             ret_data.append(d)
 
         self.build.data.extend(ret_data)
@@ -2531,6 +2523,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                   validator=lambda x: 'cannot be absolute' if any(os.path.isabs(d) for d in x) else None),
         INSTALL_MODE_KW.evolve(since='0.38.0'),
         INSTALL_TAG_KW.evolve(since='0.60.0'),
+        INSTALL_FOLLOW_SYMLINKS,
     )
     def func_install_subdir(self, node: mparser.BaseNode, args: T.Tuple[str],
                             kwargs: 'kwtypes.FuncInstallSubdir') -> build.InstallDir:
@@ -2556,7 +2549,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             exclude,
             kwargs['strip_directory'],
             self.subproject,
-            install_tag=kwargs['install_tag'])
+            install_tag=kwargs['install_tag'],
+            follow_symlinks=kwargs['follow_symlinks'])
         self.build.install_dirs.append(idir)
         return idir
 
@@ -2596,6 +2590,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         OUTPUT_KW,
         KwargInfo('output_format', str, default='c', since='0.47.0', since_values={'json': '1.3.0'},
                   validator=in_set_validator({'c', 'json', 'nasm'})),
+        KwargInfo('macro_name', (str, NoneType), default=None, since='1.3.0'),
     )
     def func_configure_file(self, node: mparser.BaseNode, args: T.List[TYPE_var],
                             kwargs: kwtypes.ConfigureFile):
@@ -2687,7 +2682,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                                      'copy a file to the build dir, use the \'copy:\' keyword '
                                      'argument added in 0.47.0', location=node)
             else:
-                mesonlib.dump_conf_header(ofile_abs, conf, output_format)
+                macro_name = kwargs['macro_name']
+                mesonlib.dump_conf_header(ofile_abs, conf, output_format, macro_name)
             conf.used = True
         elif kwargs['command'] is not None:
             if len(inputs) > 1:
@@ -2784,7 +2780,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         absbase_build = os.path.join(build_root, self.subdir)
 
         for a in incdir_strings:
-            if a.startswith(src_root):
+            if path_is_in_root(Path(a), Path(src_root)):
                 raise InvalidArguments(textwrap.dedent('''\
                     Tried to form an absolute path to a dir in the source tree.
                     You should not do that but use relative paths instead, for
@@ -2951,7 +2947,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def _add_global_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[str, T.List[str]],
                               args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         if self.is_subproject():
-            msg = f'Function \'{node.func_name}\' cannot be used in subprojects because ' \
+            msg = f'Function \'{node.func_name.value}\' cannot be used in subprojects because ' \
                   'there is no way to make that reliable.\nPlease only call ' \
                   'this if is_subproject() returns false. Alternatively, ' \
                   'define a variable that\ncontains your language-specific ' \
@@ -2971,7 +2967,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def _add_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[str, T.List[str]],
                        args_frozen: bool, args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         if args_frozen:
-            msg = f'Tried to use \'{node.func_name}\' after a build target has been declared.\n' \
+            msg = f'Tried to use \'{node.func_name.value}\' after a build target has been declared.\n' \
                   'This is not permitted. Please declare all arguments before your targets.'
             raise InvalidCode(msg)
 
@@ -3107,6 +3103,9 @@ class Interpreter(InterpreterBase, HoldableObject):
     @T.overload
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
 
+    @T.overload
+    def source_strings_to_files(self, sources: T.List[SourcesVarargsType], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
+
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: # noqa: F811
         """Lower inputs to a list of Targets and Files, replacing any strings.
 
@@ -3170,8 +3169,12 @@ class Interpreter(InterpreterBase, HoldableObject):
         # To permit an executable and a shared library to have the
         # same name, such as "foo.exe" and "libfoo.a".
         idname = tobj.get_id()
-        if idname in self.build.targets:
-            raise InvalidCode(f'Tried to create target "{name}", but a target of that name already exists.')
+        for t in self.build.targets.values():
+            if t.get_id() == idname:
+                raise InvalidCode(f'Tried to create target "{name}", but a target of that name already exists.')
+            if isinstance(tobj, build.Executable) and isinstance(t, build.Executable) and t.name == tobj.name:
+                FeatureNew.single_use('multiple executables with the same name but different suffixes',
+                                      '1.3.0', self.subproject, location=self.current_node)
 
         if isinstance(tobj, build.BuildTarget):
             self.add_languages(tobj.missing_languages, True, tobj.for_machine)
@@ -3194,6 +3197,10 @@ class Interpreter(InterpreterBase, HoldableObject):
             # built twice. This is unfortunate and slow, but at least it works.
             # Feel free to submit patches to get this fixed if it is an
             # issue for you.
+            reuse_object_files = False
+        elif shared_lib.uses_rust():
+            # FIXME: rustc supports generating both libraries in a single invocation,
+            # but for now compile twice.
             reuse_object_files = False
         else:
             reuse_object_files = static_lib.pic
@@ -3223,9 +3230,31 @@ class Interpreter(InterpreterBase, HoldableObject):
         else:
             raise InterpreterException(f'Unknown default_library value: {default_library}.')
 
-    def build_target(self, node: mparser.BaseNode, args, kwargs, targetclass):
-        @FeatureNewKwargs('build target', '1.2.0', ['rust_dependency_map'])
-        @FeatureNewKwargs('build target', '0.42.0', ['rust_crate_type', 'build_rpath', 'implicit_include_directories'])
+    @T.overload
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: kwtypes.Executable, targetclass: T.Type[build.Executable]) -> build.Executable: ...
+
+    @T.overload
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: kwtypes.StaticLibrary, targetclass: T.Type[build.StaticLibrary]) -> build.StaticLibrary: ...
+
+    @T.overload
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: kwtypes.SharedLibrary, targetclass: T.Type[build.SharedLibrary]) -> build.SharedLibrary: ...
+
+    @T.overload
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: kwtypes.SharedModule, targetclass: T.Type[build.SharedModule]) -> build.SharedModule: ...
+
+    @T.overload
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: kwtypes.Jar, targetclass: T.Type[build.Jar]) -> build.Jar: ...
+
+    def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
+                     kwargs: T.Union[kwtypes.Executable, kwtypes.StaticLibrary, kwtypes.SharedLibrary, kwtypes.SharedModule, kwtypes.Jar],
+                     targetclass: T.Type[T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]]
+                     ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]:
+        @FeatureNewKwargs('build target', '0.42.0', ['build_rpath', 'implicit_include_directories'])
         @FeatureNewKwargs('build target', '0.41.0', ['rust_args'])
         @FeatureNewKwargs('build target', '0.38.0', ['build_by_default'])
         @FeatureNewKwargs('build target', '0.48.0', ['gnu_symbol_visibility'])
@@ -3236,8 +3265,12 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         name, sources = args
         for_machine = self.machine_from_native_kwarg(kwargs)
-        if 'sources' in kwargs:
-            sources += listify(kwargs['sources'])
+        if kwargs.get('rust_crate_type') == 'proc-macro':
+            # Silently force to native because that's the only sensible value
+            # and rust_crate_type is deprecated any way.
+            for_machine = MachineChoice.BUILD
+        # Avoid mutating, since there could be other references to sources
+        sources = sources + kwargs['sources']
         if any(isinstance(s, build.BuildTarget) for s in sources):
             FeatureBroken.single_use('passing references to built targets as a source file', '1.1.0', self.subproject,
                                      'Consider using `link_with` or `link_whole` if you meant to link, or dropping them as otherwise they are ignored.',
@@ -3301,6 +3334,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         kwargs['include_directories'] = self.extract_incdirs(kwargs)
 
         if targetclass is build.Executable:
+            kwargs = T.cast('kwtypes.Executable', kwargs)
             if kwargs['gui_app'] is not None:
                 if kwargs['win_subsystem'] is not None:
                     raise InvalidArguments.from_node(
@@ -3310,6 +3344,21 @@ class Interpreter(InterpreterBase, HoldableObject):
                     kwargs['win_subsystem'] = 'windows'
             if kwargs['win_subsystem'] is None:
                 kwargs['win_subsystem'] = 'console'
+
+            if kwargs['implib']:
+                if kwargs['export_dynamic'] is False:
+                    FeatureDeprecated.single_use('implib overrides explict export_dynamic off', '1.3.0', self.subprojct,
+                                                 'Do not set ths if want export_dynamic disabled if implib is enabled',
+                                                 location=node)
+                kwargs['export_dynamic'] = True
+            elif kwargs['export_dynamic']:
+                if kwargs['implib'] is False:
+                    raise InvalidArguments('"implib" keyword" must not be false if "export_dynamic" is set and not false.')
+                kwargs['implib'] = True
+            if kwargs['export_dynamic'] is None:
+                kwargs['export_dynamic'] = False
+            if kwargs['implib'] is None:
+                kwargs['implib'] = False
 
         target = targetclass(name, self.subdir, self.subproject, for_machine, srcs, struct, objs,
                              self.environment, self.compilers[for_machine], kwargs)

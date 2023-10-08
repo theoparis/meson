@@ -160,14 +160,16 @@ format files
  - [Terminology](https://github.com/billiob/terminology), a terminal emulator based on the Enlightenment Foundation Libraries
  - [Tilix](https://github.com/gnunn1/tilix), a tiling terminal emulator for Linux using GTK+ 3
  - [Tizonia](https://github.com/tizonia/tizonia-openmax-il), a command-line cloud music player for Linux with support for Spotify, Google Play Music, YouTube, SoundCloud, TuneIn, Plex servers and Chromecast devices
+ - [Trilobite XUnit Test](https://github.com/trilobite-stdlib/trilo-xtest-c), a framework for testing C code
+ - [Trilobite XCore](https://github.com/trilobite-stdlib/trilo-xcore-c), a core essential library for C code
  - [UFJF-MLTK](https://github.com/mateus558/UFJF-Machine-Learning-Toolkit), A C++ cross-platform framework for machine learning algorithms development and testing
  - [Vala Language Server](https://github.com/benwaffle/vala-language-server), code intelligence engine for the Vala and Genie programming languages
  - [Valum](https://github.com/valum-framework/valum), a micro web framework written in Vala
  - [Venom](https://github.com/naxuroqa/Venom), a modern Tox client for the GNU/Linux desktop
  - [vkQuake](https://github.com/Novum/vkQuake), a port of id Software's Quake using Vulkan instead of OpenGL for rendering
  - [VMAF](https://github.com/Netflix/vmaf) (by Netflix), a perceptual video quality assessment based on multi-method fusion
- - [Wayland](https://github.com/wayland-project/wayland) and [Weston](https://github.com/wayland-project/weston), a next generation display server
- - [wlroots](https://github.com/swaywm/wlroots), a modular Wayland compositor library
+ - [Wayland](https://gitlab.freedesktop.org/wayland/wayland) and [Weston](https://gitlab.freedesktop.org/wayland/weston), a next generation display server
+ - [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots), a modular Wayland compositor library
  - [xi-gtk](https://github.com/eyelash/xi-gtk), a GTK+ front-end for the Xi editor
  - [Xorg](https://gitlab.freedesktop.org/xorg/xserver), the X.org display server (not the default yet)
  - [X Test Suite](https://gitlab.freedesktop.org/xorg/test/xts), The X.org test suite

@@ -2039,6 +2039,25 @@ class AllPlatformTests(BasePlatformTests):
         original = get_opt()
         self.assertDictEqual(original, expected)
 
+    def test_executable_names(self):
+        testdir = os.path.join(self.unit_test_dir, '119 executable suffix')
+        self.init(testdir)
+        self.build()
+        exe1 = os.path.join(self.builddir, 'foo' + exe_suffix)
+        exe2 = os.path.join(self.builddir, 'foo.bin')
+        self.assertPathExists(exe1)
+        self.assertPathExists(exe2)
+        self.assertNotEqual(exe1, exe2)
+
+        # Wipe and run the compile command against the target names
+        self.init(testdir, extra_args=['--wipe'])
+        self._run([*self.meson_command, 'compile', '-C', self.builddir, './foo'])
+        self._run([*self.meson_command, 'compile', '-C', self.builddir, './foo.bin'])
+        self.assertPathExists(exe1)
+        self.assertPathExists(exe2)
+        self.assertNotEqual(exe1, exe2)
+
+
     def opt_has(self, name, value):
         res = self.introspect('--buildoptions')
         found = False
@@ -3028,6 +3047,37 @@ class AllPlatformTests(BasePlatformTests):
         out = self.run_target('clang-tidy')
         self.assertIn('cttest.cpp:4:20', out)
         self.assertNotIn(dummydir, out)
+
+    @skipIfNoExecutable('clang-tidy')
+    def test_clang_tidy_fix(self):
+        if self.backend is not Backend.ninja:
+            raise SkipTest(f'Clang-tidy is for now only supported on Ninja, not {self.backend.name}')
+        if shutil.which('c++') is None:
+            raise SkipTest('Clang-tidy breaks when ccache is used and "c++" not in path.')
+        if is_osx():
+            raise SkipTest('Apple ships a broken clang-tidy that chokes on -pipe.')
+        testdir = os.path.join(self.unit_test_dir, '68 clang-tidy')
+
+        # Ensure that test project is in git even when running meson from tarball.
+        srcdir = os.path.join(self.builddir, 'src')
+        shutil.copytree(testdir, srcdir)
+        git_init(srcdir)
+        testdir = srcdir
+        self.new_builddir()
+
+        dummydir = os.path.join(testdir, 'dummydir.h')
+        testfile = os.path.join(testdir, 'cttest.cpp')
+        fixedfile = os.path.join(testdir, 'cttest_fixed.cpp')
+        self.init(testdir, override_envvars={'CXX': 'c++'})
+        # Make sure test files are different
+        self.assertNotEqual(Path(testfile).read_text(encoding='utf-8'),
+                            Path(fixedfile).read_text(encoding='utf-8'))
+        out = self.run_target('clang-tidy-fix')
+        self.assertIn('cttest.cpp:4:20', out)
+        self.assertNotIn(dummydir, out)
+        # Make sure the test file is fixed
+        self.assertEqual(Path(testfile).read_text(encoding='utf-8'),
+                         Path(fixedfile).read_text(encoding='utf-8'))
 
     def test_identity_cross(self):
         testdir = os.path.join(self.unit_test_dir, '69 cross')

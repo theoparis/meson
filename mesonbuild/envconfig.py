@@ -68,6 +68,7 @@ known_cpu_families = (
     'sh4',
     'sparc',
     'sparc64',
+    'sw_64',
     'wasm32',
     'wasm64',
     'x86',
@@ -86,6 +87,7 @@ CPU_FAMILIES_64_BIT = [
     'riscv64',
     's390x',
     'sparc64',
+    'sw_64',
     'wasm64',
     'x86_64',
 ]
@@ -133,7 +135,6 @@ ENV_VAR_TOOL_MAP: T.Mapping[str, str] = {
     # Other tools
     'cmake': 'CMAKE',
     'qmake': 'QMAKE',
-    'pkgconfig': 'PKG_CONFIG',
     'pkg-config': 'PKG_CONFIG',
     'make': 'MAKE',
     'vapigen': 'VAPIGEN',
@@ -403,6 +404,11 @@ class BinaryTable:
                 if not isinstance(command, (list, str)):
                     raise mesonlib.MesonException(
                         f'Invalid type {command!r} for entry {name!r} in cross file')
+                if name == 'pkgconfig':
+                    if 'pkg-config' in binaries:
+                        raise mesonlib.MesonException('Both pkgconfig and pkg-config entries in machine file.')
+                    mlog.deprecation('"pkgconfig" entry is deprecated and should be replaced by "pkg-config"')
+                    name = 'pkg-config'
                 self.binaries[name] = mesonlib.listify(command)
 
     @staticmethod

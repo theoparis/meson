@@ -18,6 +18,7 @@ import pickle
 import tempfile
 import subprocess
 import textwrap
+import shutil
 from unittest import skipIf, SkipTest
 from pathlib import Path
 
@@ -261,3 +262,19 @@ class PlatformAgnosticTests(BasePlatformTests):
 
         self.assertEqual(data['modules'], expected)
         self.assertEqual(data['count'], 68)
+
+    def test_meson_package_cache_dir(self):
+        # Copy testdir into temporary directory to not pollute meson source tree.
+        testdir = os.path.join(self.unit_test_dir, '116 meson package cache dir')
+        srcdir = os.path.join(self.builddir, 'srctree')
+        shutil.copytree(testdir, srcdir)
+        builddir = os.path.join(srcdir, '_build')
+        self.change_builddir(builddir)
+        self.init(srcdir, override_envvars={'MESON_PACKAGE_CACHE_DIR': os.path.join(srcdir, 'cache_dir')})
+
+    def test_cmake_openssl_not_found_bug(self):
+        """Issue #12098"""
+        testdir = os.path.join(self.unit_test_dir, '117 openssl cmake bug')
+        self.meson_native_files.append(os.path.join(testdir, 'nativefile.ini'))
+        out = self.init(testdir, allow_fail=True)
+        self.assertNotIn('Unhandled python exception', out)

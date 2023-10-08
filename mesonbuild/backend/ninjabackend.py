@@ -1694,8 +1694,6 @@ class NinjaBackend(backends.Backend):
             # Without this, it will write it inside c_out_dir
             args += ['--vapi', os.path.join('..', target.vala_vapi)]
             valac_outputs.append(vapiname)
-            target.outputs += [target.vala_header, target.vala_vapi]
-            target.install_tag += ['devel', 'devel']
             # Install header and vapi to default locations if user requests this
             if len(target.install_dir) > 1 and target.install_dir[1] is True:
                 target.install_dir[1] = self.environment.get_includedir()
@@ -1706,8 +1704,6 @@ class NinjaBackend(backends.Backend):
                 girname = os.path.join(self.get_target_dir(target), target.vala_gir)
                 args += ['--gir', os.path.join('..', target.vala_gir)]
                 valac_outputs.append(girname)
-                target.outputs.append(target.vala_gir)
-                target.install_tag.append('devel')
                 # Install GIR to default location if requested by user
                 if len(target.install_dir) > 3 and target.install_dir[3] is True:
                     target.install_dir[3] = os.path.join(self.environment.get_datadir(), 'gir-1.0')
@@ -1941,16 +1937,7 @@ class NinjaBackend(backends.Backend):
         if main_rust_file is None:
             raise RuntimeError('A Rust target has no Rust sources. This is weird. Also a bug. Please report')
         target_name = os.path.join(target.subdir, target.get_filename())
-        if isinstance(target, build.Executable):
-            cratetype = 'bin'
-        elif hasattr(target, 'rust_crate_type'):
-            cratetype = target.rust_crate_type
-        elif isinstance(target, build.SharedLibrary):
-            cratetype = 'dylib'
-        elif isinstance(target, build.StaticLibrary):
-            cratetype = 'rlib'
-        else:
-            raise InvalidArguments('Unknown target type for rustc.')
+        cratetype = target.rust_crate_type
         args.extend(['--crate-type', cratetype])
 
         # If we're dynamically linking, add those arguments
@@ -1964,10 +1951,9 @@ class NinjaBackend(backends.Backend):
         # Rustc replaces - with _. spaces or dots are not allowed, so we replace them with underscores
         args += ['--crate-name', target.name.replace('-', '_').replace(' ', '_').replace('.', '_')]
         depfile = os.path.join(target.subdir, target.name + '.d')
-        args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
+        args += ['--emit', f'dep-info={depfile}', '--emit', f'link={target_name}']
+        args += ['--out-dir', self.get_target_private_dir(target)]
         args += target.get_extra_args('rust')
-        output = rustc.get_output_args(os.path.join(target.subdir, target.get_filename()))
-        args += output
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
 
@@ -2104,13 +2090,14 @@ class NinjaBackend(backends.Backend):
                 if a in rustc.native_static_libs:
                     # Exclude link args that rustc already add by default
                     continue
-                if a.endswith(('.dll', '.so', '.dylib')):
+                if a.endswith(('.dll', '.so', '.dylib', '.a', '.lib')):
                     dir_, lib = os.path.split(a)
                     linkdirs.add(dir_)
                     lib, ext = os.path.splitext(lib)
                     if lib.startswith('lib'):
                         lib = lib[3:]
-                    args.extend(['-l', f'dylib={lib}'])
+                    _type = 'static' if a.endswith(('.a', '.lib')) else 'dylib'
+                    args.extend(['-l', f'{_type}={lib}'])
                 elif a.startswith('-L'):
                     args.append(a)
                 elif a.startswith('-l'):
@@ -2350,7 +2337,7 @@ class NinjaBackend(backends.Backend):
             if static_linker is None:
                 continue
             rule = 'STATIC_LINKER{}'.format(self.get_rule_suffix(for_machine))
-            cmdlist = []
+            cmdlist: T.List[T.Union[str, NinjaCommandArg]] = []
             args = ['$in']
             # FIXME: Must normalize file names with pathlib.Path before writing
             #        them out to fix this properly on Windows. See:
@@ -2364,6 +2351,17 @@ class NinjaBackend(backends.Backend):
             cmdlist += static_linker.get_exelist()
             cmdlist += ['$LINK_ARGS']
             cmdlist += NinjaCommandArg.list(static_linker.get_output_args('$out'), Quoting.none)
+            # The default ar on MacOS (at least through version 12), does not
+            # add extern'd variables to the symbol table by default, and
+            # requires that apple's ranlib be called with a special flag
+            # instead after linking
+            if static_linker.id == 'applear':
+                # This is a bit of a hack, but we assume that that we won't need
+                # an rspfile on MacOS, otherwise the arguments are passed to
+                # ranlib, not to ar
+                cmdlist.extend(args)
+                args = []
+                cmdlist.extend(['&&', 'ranlib', '-c', '$out'])
             description = 'Linking static target $out'
             if num_pools > 0:
                 pool = 'pool = link_pool'
@@ -2651,7 +2649,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             args = self.replace_paths(target, args, override_subdir=subdir)
             cmdlist, reason = self.as_meson_exe_cmdline(exe,
                                                         self.replace_extra_args(args, genlist),
-                                                        capture=outfiles[0] if generator.capture else None)
+                                                        capture=outfiles[0] if generator.capture else None,
+                                                        env=genlist.env)
             abs_pdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(target))
             os.makedirs(abs_pdir, exist_ok=True)
 
@@ -2799,16 +2798,18 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # this is actually doable, please send patches.
 
         if target.has_pch():
-            tfilename = self.get_target_filename_abs(target)
+            tfilename = self.get_target_debug_filename_abs(target)
+            if not tfilename:
+                tfilename = self.get_target_filename_abs(target)
             return compiler.get_compile_debugfile_args(tfilename, pch=True)
         else:
             return compiler.get_compile_debugfile_args(objfile, pch=False)
 
-    def get_link_debugfile_name(self, linker, target, outname) -> T.Optional[str]:
-        return linker.get_link_debugfile_name(outname)
+    def get_link_debugfile_name(self, linker, target) -> T.Optional[str]:
+        return linker.get_link_debugfile_name(self.get_target_debug_filename(target))
 
-    def get_link_debugfile_args(self, linker, target, outname):
-        return linker.get_link_debugfile_args(outname)
+    def get_link_debugfile_args(self, linker, target):
+        return linker.get_link_debugfile_args(self.get_target_debug_filename(target))
 
     def generate_llvm_ir_compile(self, target, src):
         base_proxy = target.get_options()
@@ -3250,6 +3251,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 commands += linker.gen_import_library_args(self.get_import_filename(target))
             if target.pie:
                 commands += linker.get_pie_link_args()
+            if target.vs_module_defs and hasattr(linker, 'gen_vs_module_defs_args'):
+                commands += linker.gen_vs_module_defs_args(target.vs_module_defs.rel_to_builddir(self.build_to_src))
         elif isinstance(target, build.SharedLibrary):
             if isinstance(target, build.SharedModule):
                 commands += linker.get_std_shared_module_link_args(target.get_options())
@@ -3440,8 +3443,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         commands += linker.get_buildtype_linker_args(target.get_option(OptionKey('buildtype')))
         # Add /DEBUG and the pdb filename when using MSVC
         if target.get_option(OptionKey('debug')):
-            commands += self.get_link_debugfile_args(linker, target, outname)
-            debugfile = self.get_link_debugfile_name(linker, target, outname)
+            commands += self.get_link_debugfile_args(linker, target)
+            debugfile = self.get_link_debugfile_name(linker, target)
             if debugfile is not None:
                 implicit_outs += [debugfile]
         # Add link args specific to this BuildTarget type, such as soname args,
@@ -3661,6 +3664,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         if not shutil.which('clang-tidy'):
             return
         self.generate_clangtool('tidy')
+        self.generate_clangtool('tidy', 'fix')
 
     def generate_tags(self, tool: str, target_name: str) -> None:
         import shutil
