@@ -237,8 +237,10 @@ class NinjaRule:
         return ninja_quote(qf(str(x)))
 
     def write(self, outfile: T.TextIO) -> None:
+        rspfile_args = self.args
         if self.rspfile_quote_style is RSPFileSyntax.MSVC:
             rspfile_quote_func = cmd_quote
+            rspfile_args = [NinjaCommandArg('$in_newline', arg.quoting) if arg.s == '$in' else arg for arg in rspfile_args]
         else:
             rspfile_quote_func = gcc_rsp_quote
 
@@ -253,7 +255,7 @@ class NinjaRule:
             if rsp == '_RSP':
                 outfile.write(' command = {} @$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
                 outfile.write(' rspfile = $out.rsp\n')
-                outfile.write(' rspfile_content = {}\n'.format(' '.join([self._quoter(x, rspfile_quote_func) for x in self.args])))
+                outfile.write(' rspfile_content = {}\n'.format(' '.join([self._quoter(x, rspfile_quote_func) for x in rspfile_args])))
             else:
                 outfile.write(' command = {}\n'.format(' '.join([self._quoter(x) for x in self.command + self.args])))
             if self.deps:
@@ -640,7 +642,7 @@ class NinjaBackend(backends.Backend):
             key = OptionKey('b_coverage')
             if (key in self.environment.coredata.options and
                     self.environment.coredata.options[key].value):
-                gcovr_exe, gcovr_version, lcov_exe, genhtml_exe, _ = environment.find_coverage_tools()
+                gcovr_exe, gcovr_version, lcov_exe, lcov_version, genhtml_exe, _ = environment.find_coverage_tools()
                 if gcovr_exe or (lcov_exe and genhtml_exe):
                     self.add_build_comment(NinjaComment('Coverage rules'))
                     self.generate_coverage_rules(gcovr_exe, gcovr_version)
@@ -1068,7 +1070,7 @@ class NinjaBackend(backends.Backend):
             return True
         if 'cpp' not in target.compilers:
             return False
-        if '-fmodules-ts' in target.extra_args.get('cpp', []):
+        if '-fmodules-ts' in target.extra_args['cpp']:
             return True
         # Currently only the preview version of Visual Studio is supported.
         cpp = target.compilers['cpp']
@@ -1151,7 +1153,7 @@ class NinjaBackend(backends.Backend):
         self.custom_target_generator_inputs(target)
         (srcs, ofilenames, cmd) = self.eval_custom_target_command(target)
         deps = self.unwrap_dep_list(target)
-        deps += self.get_custom_target_depend_files(target)
+        deps += self.get_target_depend_files(target)
         if target.build_always_stale:
             deps.append('PHONY')
         if target.depfile is None:
@@ -1214,7 +1216,7 @@ class NinjaBackend(backends.Backend):
             elem.add_item('description', f'Running external command {target.name}{cmd_type}')
             elem.add_item('pool', 'console')
         deps = self.unwrap_dep_list(target)
-        deps += self.get_custom_target_depend_files(target)
+        deps += self.get_target_depend_files(target)
         elem.add_dep(deps)
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
@@ -1462,7 +1464,7 @@ class NinjaBackend(backends.Backend):
         compiler = target.compilers['cs']
         rel_srcs = [os.path.normpath(s.rel_to_builddir(self.build_to_src)) for s in src_list]
         deps = []
-        commands = compiler.compiler_args(target.extra_args.get('cs', []))
+        commands = compiler.compiler_args(target.extra_args['cs'])
         commands += compiler.get_buildtype_args(buildtype)
         commands += compiler.get_optimization_args(target.get_option(OptionKey('optimization')))
         commands += compiler.get_debug_args(target.get_option(OptionKey('debug')))
@@ -1712,18 +1714,10 @@ class NinjaBackend(backends.Backend):
             if isinstance(gensrc, modules.GResourceTarget):
                 gres_xml, = self.get_custom_target_sources(gensrc)
                 args += ['--gresources=' + gres_xml]
-        extra_args = []
-
-        for a in target.extra_args.get('vala', []):
-            if isinstance(a, File):
-                relname = a.rel_to_builddir(self.build_to_src)
-                extra_dep_files.append(relname)
-                extra_args.append(relname)
-            else:
-                extra_args.append(a)
         dependency_vapis = self.determine_dep_vapis(target)
         extra_dep_files += dependency_vapis
-        args += extra_args
+        extra_dep_files.extend(self.get_target_depend_files(target))
+        args += target.get_extra_args('vala')
         element = NinjaBuildElement(self.all_outputs, valac_outputs,
                                     self.compiler_to_rule_name(valac),
                                     all_files + dependency_vapis)
@@ -2361,7 +2355,12 @@ class NinjaBackend(backends.Backend):
                 # ranlib, not to ar
                 cmdlist.extend(args)
                 args = []
-                cmdlist.extend(['&&', 'ranlib', '-c', '$out'])
+                # Ensure that we use the user-specified ranlib if any, and
+                # fallback to just picking up some ranlib otherwise
+                ranlib = self.environment.lookup_binary_entry(for_machine, 'ranlib')
+                if ranlib is None:
+                    ranlib = ['ranlib']
+                cmdlist.extend(['&&'] + ranlib + ['-c', '$out'])
             description = 'Linking static target $out'
             if num_pools > 0:
                 pool = 'pool = link_pool'
@@ -2622,7 +2621,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         exe = generator.get_exe()
         infilelist = genlist.get_inputs()
         outfilelist = genlist.get_outputs()
-        extra_dependencies = self.get_custom_target_depend_files(genlist)
+        extra_dependencies = self.get_target_depend_files(genlist)
         for i, curfile in enumerate(infilelist):
             if len(generator.outputs) == 1:
                 sole_output = os.path.join(self.get_target_private_dir(target), outfilelist[i])
