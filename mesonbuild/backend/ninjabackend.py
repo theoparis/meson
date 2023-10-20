@@ -237,8 +237,10 @@ class NinjaRule:
         return ninja_quote(qf(str(x)))
 
     def write(self, outfile: T.TextIO) -> None:
+        rspfile_args = self.args
         if self.rspfile_quote_style is RSPFileSyntax.MSVC:
             rspfile_quote_func = cmd_quote
+            rspfile_args = [NinjaCommandArg('$in_newline', arg.quoting) if arg.s == '$in' else arg for arg in rspfile_args]
         else:
             rspfile_quote_func = gcc_rsp_quote
 
@@ -253,7 +255,7 @@ class NinjaRule:
             if rsp == '_RSP':
                 outfile.write(' command = {} @$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
                 outfile.write(' rspfile = $out.rsp\n')
-                outfile.write(' rspfile_content = {}\n'.format(' '.join([self._quoter(x, rspfile_quote_func) for x in self.args])))
+                outfile.write(' rspfile_content = {}\n'.format(' '.join([self._quoter(x, rspfile_quote_func) for x in rspfile_args])))
             else:
                 outfile.write(' command = {}\n'.format(' '.join([self._quoter(x) for x in self.command + self.args])))
             if self.deps:
@@ -640,7 +642,7 @@ class NinjaBackend(backends.Backend):
             key = OptionKey('b_coverage')
             if (key in self.environment.coredata.options and
                     self.environment.coredata.options[key].value):
-                gcovr_exe, gcovr_version, lcov_exe, genhtml_exe, _ = environment.find_coverage_tools()
+                gcovr_exe, gcovr_version, lcov_exe, lcov_version, genhtml_exe, _ = environment.find_coverage_tools()
                 if gcovr_exe or (lcov_exe and genhtml_exe):
                     self.add_build_comment(NinjaComment('Coverage rules'))
                     self.generate_coverage_rules(gcovr_exe, gcovr_version)
@@ -1068,7 +1070,7 @@ class NinjaBackend(backends.Backend):
             return True
         if 'cpp' not in target.compilers:
             return False
-        if '-fmodules-ts' in target.extra_args.get('cpp', []):
+        if '-fmodules-ts' in target.extra_args['cpp']:
             return True
         # Currently only the preview version of Visual Studio is supported.
         cpp = target.compilers['cpp']
@@ -1151,7 +1153,7 @@ class NinjaBackend(backends.Backend):
         self.custom_target_generator_inputs(target)
         (srcs, ofilenames, cmd) = self.eval_custom_target_command(target)
         deps = self.unwrap_dep_list(target)
-        deps += self.get_custom_target_depend_files(target)
+        deps += self.get_target_depend_files(target)
         if target.build_always_stale:
             deps.append('PHONY')
         if target.depfile is None:
@@ -1214,7 +1216,7 @@ class NinjaBackend(backends.Backend):
             elem.add_item('description', f'Running external command {target.name}{cmd_type}')
             elem.add_item('pool', 'console')
         deps = self.unwrap_dep_list(target)
-        deps += self.get_custom_target_depend_files(target)
+        deps += self.get_target_depend_files(target)
         elem.add_dep(deps)
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
@@ -1462,7 +1464,7 @@ class NinjaBackend(backends.Backend):
         compiler = target.compilers['cs']
         rel_srcs = [os.path.normpath(s.rel_to_builddir(self.build_to_src)) for s in src_list]
         deps = []
-        commands = compiler.compiler_args(target.extra_args.get('cs', []))
+        commands = compiler.compiler_args(target.extra_args['cs'])
         commands += compiler.get_buildtype_args(buildtype)
         commands += compiler.get_optimization_args(target.get_option(OptionKey('optimization')))
         commands += compiler.get_debug_args(target.get_option(OptionKey('debug')))
@@ -1712,18 +1714,10 @@ class NinjaBackend(backends.Backend):
             if isinstance(gensrc, modules.GResourceTarget):
                 gres_xml, = self.get_custom_target_sources(gensrc)
                 args += ['--gresources=' + gres_xml]
-        extra_args = []
-
-        for a in target.extra_args.get('vala', []):
-            if isinstance(a, File):
-                relname = a.rel_to_builddir(self.build_to_src)
-                extra_dep_files.append(relname)
-                extra_args.append(relname)
-            else:
-                extra_args.append(a)
         dependency_vapis = self.determine_dep_vapis(target)
         extra_dep_files += dependency_vapis
-        args += extra_args
+        extra_dep_files.extend(self.get_target_depend_files(target))
+        args += target.get_extra_args('vala')
         element = NinjaBuildElement(self.all_outputs, valac_outputs,
                                     self.compiler_to_rule_name(valac),
                                     all_files + dependency_vapis)
@@ -1957,47 +1951,16 @@ class NinjaBackend(backends.Backend):
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
 
-        # Have we already injected msvc-crt args?
-        #
-        # If we don't have A C, C++, or Fortran compiler that is
-        # VisualStudioLike treat this as if we've already injected them
-        #
-        # We handle this here rather than in the rust compiler because in
-        # general we don't want to link rust targets to a non-default crt.
-        # However, because of the way that MSCRTs work you can only link to one
-        # per target, so if A links to the debug one, and B links to the normal
-        # one you can't link A and B. Rust is hardcoded to the default one,
-        # so if we compile C/C++ code and link against a non-default MSCRT then
-        # linking will fail. We can work around this by injecting MSCRT link
-        # arguments early in the rustc command line
+        # Rustc always use non-debug Windows runtime. Inject the one selected
+        # by Meson options instead.
         # https://github.com/rust-lang/rust/issues/39016
-        crt_args_injected = not any(x is not None and x.get_argument_syntax() == 'msvc' for x in
-                                    (self.environment.coredata.compilers[target.for_machine].get(l)
-                                     for l in ['c', 'cpp', 'fortran']))
-
-        crt_link_args: T.List[str] = []
-        try:
-            buildtype = target.get_option(OptionKey('buildtype'))
-            crt = target.get_option(OptionKey('b_vscrt'))
-            is_debug = buildtype == 'debug'
-
-            if crt == 'from_buildtype':
-                crt = 'mdd' if is_debug else 'md'
-            elif crt == 'static_from_buildtype':
-                crt = 'mtd' if is_debug else 'mt'
-
-            if crt == 'mdd':
-                crt_link_args = ['-l', 'static=msvcrtd']
-            elif crt == 'md':
-                # this is the default, no need to inject anything
-                crt_args_injected = True
-            elif crt == 'mtd':
-                crt_link_args = ['-l', 'static=libcmtd']
-            elif crt == 'mt':
-                crt_link_args = ['-l', 'static=libcmt']
-
-        except KeyError:
-            crt_args_injected = True
+        if not isinstance(target, build.StaticLibrary):
+            try:
+                buildtype = target.get_option(OptionKey('buildtype'))
+                crt = target.get_option(OptionKey('b_vscrt'))
+                args += rustc.get_crt_link_args(crt, buildtype)
+            except KeyError:
+                pass
 
         # TODO: we likely need to use verbatim to handle name_prefix and name_suffix
         for d in target.link_targets:
@@ -2013,10 +1976,6 @@ class NinjaBackend(backends.Backend):
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
                 continue
-
-            if not crt_args_injected and not {'c', 'cpp', 'fortran'}.isdisjoint(d.compilers):
-                args += crt_link_args
-                crt_args_injected = True
 
             if isinstance(d, build.StaticLibrary):
                 # Rustc doesn't follow Meson's convention that static libraries
@@ -2058,10 +2017,6 @@ class NinjaBackend(backends.Backend):
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
             else:
-                if not crt_args_injected and not {'c', 'cpp', 'fortran'}.isdisjoint(d.compilers):
-                    crt_args_injected = True
-                    crt_args_injected = True
-
                 if rustc.linker.id in {'link', 'lld-link'}:
                     if verbatim:
                         # If we can use the verbatim modifier, then everything is great
@@ -2361,7 +2316,12 @@ class NinjaBackend(backends.Backend):
                 # ranlib, not to ar
                 cmdlist.extend(args)
                 args = []
-                cmdlist.extend(['&&', 'ranlib', '-c', '$out'])
+                # Ensure that we use the user-specified ranlib if any, and
+                # fallback to just picking up some ranlib otherwise
+                ranlib = self.environment.lookup_binary_entry(for_machine, 'ranlib')
+                if ranlib is None:
+                    ranlib = ['ranlib']
+                cmdlist.extend(['&&'] + ranlib + ['-c', '$out'])
             description = 'Linking static target $out'
             if num_pools > 0:
                 pool = 'pool = link_pool'
@@ -2622,7 +2582,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         exe = generator.get_exe()
         infilelist = genlist.get_inputs()
         outfilelist = genlist.get_outputs()
-        extra_dependencies = self.get_custom_target_depend_files(genlist)
+        extra_dependencies = self.get_target_depend_files(genlist)
         for i, curfile in enumerate(infilelist):
             if len(generator.outputs) == 1:
                 sole_output = os.path.join(self.get_target_private_dir(target), outfilelist[i])

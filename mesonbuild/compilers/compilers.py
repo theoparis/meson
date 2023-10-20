@@ -32,7 +32,7 @@ from ..mesonlib import (
 from ..arglist import CompilerArgs
 
 if T.TYPE_CHECKING:
-    from ..build import BuildTarget
+    from ..build import BuildTarget, DFeatures
     from ..coredata import MutableKeyedOptionDictType, KeyedOptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
@@ -299,6 +299,8 @@ clike_debug_args: T.Dict[bool, T.List[str]] = {
     True: ['-g']
 }
 
+MSCRT_VALS = ['none', 'md', 'mdd', 'mt', 'mtd']
+
 base_options: 'KeyedOptionDictType' = {
     OptionKey('b_pch'): coredata.UserBooleanOption('Use precompiled headers', True),
     OptionKey('b_lto'): coredata.UserBooleanOption('Use link time optimization', False),
@@ -325,7 +327,7 @@ base_options: 'KeyedOptionDictType' = {
     OptionKey('b_pie'): coredata.UserBooleanOption('Build executables as position independent', False),
     OptionKey('b_bitcode'): coredata.UserBooleanOption('Generate and embed bitcode (only macOS/iOS/tvOS)', False),
     OptionKey('b_vscrt'): coredata.UserComboOption('VS run-time library type to use.',
-                                                   ['none', 'md', 'mdd', 'mt', 'mtd', 'from_buildtype', 'static_from_buildtype'],
+                                                   MSCRT_VALS + ['from_buildtype', 'static_from_buildtype'],
                                                    'from_buildtype'),
 }
 
@@ -1105,6 +1107,28 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         """
         return []
 
+    def get_crt_val(self, crt_val: str, buildtype: str) -> str:
+        if crt_val in MSCRT_VALS:
+            return crt_val
+        assert crt_val in {'from_buildtype', 'static_from_buildtype'}
+
+        dbg = 'mdd'
+        rel = 'md'
+        if crt_val == 'static_from_buildtype':
+            dbg = 'mtd'
+            rel = 'mt'
+
+        # Match what build type flags used to do.
+        if buildtype == 'plain':
+            return 'none'
+        elif buildtype == 'debug':
+            return dbg
+        elif buildtype in {'debugoptimized', 'release', 'minsize'}:
+            return rel
+        else:
+            assert buildtype == 'custom'
+            raise EnvironmentException('Requested C runtime based on buildtype, but buildtype is "custom".')
+
     def get_crt_compile_args(self, crt_val: str, buildtype: str) -> T.List[str]:
         raise EnvironmentException('This compiler does not support Windows CRT selection')
 
@@ -1331,7 +1355,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return self.compiles(code, env, extra_args=extra_args,
                              dependencies=dependencies, mode=CompileCheckMode.LINK, disable_cache=disable_cache)
 
-    def get_feature_args(self, kwargs: T.Dict[str, T.Any], build_to_src: str) -> T.List[str]:
+    def get_feature_args(self, kwargs: DFeatures, build_to_src: str) -> T.List[str]:
         """Used by D for extra language features."""
         # TODO: using a TypeDict here would improve this
         raise EnvironmentException(f'{self.id} does not implement get_feature_args')
