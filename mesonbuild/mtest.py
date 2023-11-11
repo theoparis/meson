@@ -124,6 +124,8 @@ def determine_worker_count() -> int:
             num_workers = 1
     return num_workers
 
+# Note: when adding arguments, please also add them to the completion
+# scripts in $MESONSRC/data/shell-completions/
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--maxfail', default=0, type=int,
                         help='Number of failing tests before aborting the '
@@ -141,9 +143,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--wrapper', default=None, dest='wrapper', type=split_args,
                         help='wrapper to run tests with (e.g. Valgrind)')
     parser.add_argument('-C', dest='wd', action=RealPathAction,
-                        # https://github.com/python/typeshed/issues/3107
-                        # https://github.com/python/mypy/issues/7177
-                        type=os.path.abspath,  # type: ignore
                         help='directory to cd into before running')
     parser.add_argument('--suite', default=[], dest='include_suites', action='append', metavar='SUITE',
                         help='Only run tests belonging to the given suite.')
@@ -157,7 +156,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Run benchmarks instead of tests.")
     parser.add_argument('--logbase', default='testlog',
                         help="Base name for log file.")
-    parser.add_argument('--num-processes', default=determine_worker_count(), type=int,
+    parser.add_argument('-j', '--num-processes', default=determine_worker_count(), type=int,
                         help='How many parallel processes to use.')
     parser.add_argument('-v', '--verbose', default=False, action='store_true',
                         help='Do not redirect stdout and stderr')

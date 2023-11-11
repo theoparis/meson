@@ -527,7 +527,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     language: str
     id: str
     warn_args: T.Dict[str, T.List[str]]
-    mode = CompileCheckMode.COMPILE
+    mode = 'COMPILER'
 
     def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str,
                  for_machine: MachineChoice, info: 'MachineInfo',
@@ -962,6 +962,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return self.linker.get_archive_name(filename)
 
     def get_command_to_archive_shlib(self) -> T.List[str]:
+        if not self.linker:
+            return []
         return self.linker.get_command_to_archive_shlib()
 
     def thread_flags(self, env: 'Environment') -> T.List[str]:
