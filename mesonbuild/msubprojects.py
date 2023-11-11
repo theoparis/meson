@@ -638,7 +638,7 @@ def add_common_arguments(p: argparse.ArgumentParser) -> None:
                    help='Path to source directory')
     p.add_argument('--types', default='',
                    help=f'Comma-separated list of subproject types. Supported types are: {ALL_TYPES_STRING} (default: all)')
-    p.add_argument('--num-processes', default=None, type=int,
+    p.add_argument('-j', '--num-processes', default=None, type=int,
                    help='How many parallel processes to use (Since 0.59.0).')
     p.add_argument('--allow-insecure', default=False, action='store_true',
                    help='Allow insecure server connections.')
@@ -657,6 +657,8 @@ def add_wrap_update_parser(subparsers: 'SubParsers') -> argparse.ArgumentParser:
     p.set_defaults(pre_func=Runner.pre_update_wrapdb)
     return p
 
+# Note: when adding arguments, please also add them to the completion
+# scripts in $MESONSRC/data/shell-completions/
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     subparsers = parser.add_subparsers(title='Commands', dest='command')
     subparsers.required = True
@@ -744,7 +746,7 @@ def run(options: 'Arguments') -> int:
         pre_func(options)
     logger = Logger(len(wraps))
     for wrap in wraps:
-        dirname = Path(subproject_dir, wrap.directory).as_posix()
+        dirname = Path(source_dir, subproject_dir, wrap.directory).as_posix()
         runner = Runner(logger, r, wrap, dirname, options)
         task = loop.run_in_executor(executor, runner.run)
         tasks.append(task)

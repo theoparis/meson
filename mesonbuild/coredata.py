@@ -61,7 +61,7 @@ if T.TYPE_CHECKING:
 #
 # Pip requires that RCs are named like this: '0.1.0.rc1'
 # But the corresponding Git tag needs to be '0.1.0rc1'
-version = '1.2.99'
+version = '1.3.0.rc2'
 
 # The next stable version when we are in dev. This is used to allow projects to
 # require meson version >=1.2.0 when using 1.1.99. FeatureNew won't warn when
@@ -1332,6 +1332,7 @@ class BuiltinOption(T.Generic[_T, _U]):
 
 # Update `docs/markdown/Builtin-options.md` after changing the options below
 # Also update mesonlib._BUILTIN_NAMES. See the comment there for why this is required.
+# Please also update completion scripts in $MESONSRC/data/shell-completions/
 BUILTIN_DIR_OPTIONS: 'MutableKeyedOptionDictType' = OrderedDict([
     (OptionKey('prefix'),          BuiltinOption(UserStringOption, 'Installation prefix', default_prefix())),
     (OptionKey('bindir'),          BuiltinOption(UserStringOption, 'Executable directory', 'bin')),

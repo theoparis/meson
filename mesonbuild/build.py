@@ -252,6 +252,7 @@ class Build:
         self.environment = environment
         self.projects = {}
         self.targets: 'T.OrderedDict[str, T.Union[CustomTarget, BuildTarget]]' = OrderedDict()
+        self.targetnames: T.Set[T.Tuple[str, str]] = set() # Set of executable names and their subdir
         self.global_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.global_link_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.projects_args: PerMachine[T.Dict[str, T.Dict[str, T.List[str]]]] = PerMachine({}, {})
@@ -1298,6 +1299,8 @@ class BuildTarget(Target):
         for t in self.link_targets:
             if t in result:
                 continue
+            if isinstance(t, SharedLibrary) and t.rust_crate_type == 'proc-macro':
+                continue
             if include_internals or not t.is_internal():
                 result.add(t)
             if isinstance(t, StaticLibrary):
@@ -2170,6 +2173,9 @@ class SharedLibrary(BuildTarget):
 
     typename = 'shared library'
 
+    # Used by AIX to decide whether to archive shared library or not.
+    aix_so_archive = True
+
     def __init__(
             self,
             name: str,
@@ -2434,6 +2440,9 @@ class SharedModule(SharedLibrary):
     known_kwargs = known_shmod_kwargs
 
     typename = 'shared module'
+
+    # Used by AIX to not archive shared library for dlopen mechanism
+    aix_so_archive = False
 
     def __init__(
             self,
