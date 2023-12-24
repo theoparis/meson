@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2013-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 from pathlib import Path
@@ -139,9 +129,11 @@ class PkgConfigCLI(PkgConfigInterface):
 
     @staticmethod
     def _define_variable_args(define_variable: PkgConfigDefineType) -> T.List[str]:
+        ret = []
         if define_variable:
-            return ['--define-variable=' + '='.join(define_variable)]
-        return []
+            for pair in define_variable:
+                ret.append('--define-variable=' + '='.join(pair))
+        return ret
 
     @lru_cache(maxsize=None)
     def cflags(self, name: str, allow_system: bool = False,

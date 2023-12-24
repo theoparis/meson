@@ -494,6 +494,9 @@ class DependencyHolder(ObjectHolder[Dependency]):
         from ..dependencies.pkgconfig import PkgConfigDependency
         if not isinstance(self.held_object, PkgConfigDependency):
             raise InvalidArguments(f'{self.held_object.get_name()!r} is not a pkgconfig dependency')
+        if kwargs['define_variable'] and len(kwargs['define_variable']) > 1:
+            FeatureNew.single_use('dependency.get_pkgconfig_variable keyword argument "define_variable"  with more than one pair',
+                                  '1.3.0', self.subproject, location=self.current_node)
         return self.held_object.get_variable(
             pkgconfig=args[0],
             default_value=kwargs['default'],
@@ -536,6 +539,10 @@ class DependencyHolder(ObjectHolder[Dependency]):
         default_varname = args[0]
         if default_varname is not None:
             FeatureNew('Positional argument to dependency.get_variable()', '0.58.0').use(self.subproject, self.current_node)
+        if kwargs['pkgconfig_define'] and len(kwargs['pkgconfig_define']) > 1:
+            FeatureNew.single_use('dependency.get_variable keyword argument "pkgconfig_define" with more than one pair',
+                                  '1.3.0', self.subproject, 'In previous versions, this silently returned a malformed value.',
+                                  self.current_node)
         return self.held_object.get_variable(
             cmake=kwargs['cmake'] or default_varname,
             pkgconfig=kwargs['pkgconfig'] or default_varname,
@@ -694,7 +701,16 @@ class IncludeDirsHolder(ObjectHolder[build.IncludeDirs]):
     pass
 
 class FileHolder(ObjectHolder[mesonlib.File]):
-    pass
+    def __init__(self, file: mesonlib.File, interpreter: 'Interpreter'):
+        super().__init__(file, interpreter)
+        self.methods.update({'full_path': self.full_path_method,
+                             })
+
+    @noPosargs
+    @noKwargs
+    @FeatureNew('file.full_path', '1.4.0')
+    def full_path_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
+        return self.held_object.absolute_path(self.env.source_dir, self.env.build_dir)
 
 class HeadersHolder(ObjectHolder[build.Headers]):
     pass

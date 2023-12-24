@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2013-2018 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This file contains the detection logic for external dependencies.
 # Custom logic for several other packages are in separate files.
@@ -39,14 +28,33 @@ if T.TYPE_CHECKING:
     )
     from ..interpreter.type_checking import PkgConfigDefineType
 
+    _MissingCompilerBase = Compiler
+else:
+    _MissingCompilerBase = object
+
 
 class DependencyException(MesonException):
     '''Exceptions raised while trying to find dependencies'''
 
 
-class MissingCompiler:
+class MissingCompiler(_MissingCompilerBase):
     """Represent a None Compiler - when no tool chain is found.
     replacing AttributeError with DependencyException"""
+
+    # These are needed in type checking mode to avoid errors, but we don't want
+    # the extra overhead at runtime
+    if T.TYPE_CHECKING:
+        def __init__(self) -> None:
+            pass
+
+        def get_optimization_args(self, optimization_level: str) -> T.List[str]:
+            return []
+
+        def get_output_args(self, outputname: str) -> T.List[str]:
+            return []
+
+        def sanity_check(self, work_dir: str, environment: 'Environment') -> None:
+            return None
 
     def __getattr__(self, item: str) -> T.Any:
         if item.startswith('__'):

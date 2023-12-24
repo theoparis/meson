@@ -1,16 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2022 The Meson development team
+# Copyright © 2023 Intel Corporation
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 import abc
@@ -190,78 +181,6 @@ class CompileCheckMode(enum.Enum):
     LINK = 'link'
 
 
-cuda_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': ['-g', '-G'],
-    'debugoptimized': ['-g', '-lineinfo'],
-    'release': [],
-    'minsize': [],
-    'custom': [],
-}
-
-java_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': ['-g'],
-    'debugoptimized': ['-g'],
-    'release': [],
-    'minsize': [],
-    'custom': [],
-}
-
-rust_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': [],
-    'release': [],
-    'minsize': [],
-    'custom': [],
-}
-
-d_gdc_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': ['-finline-functions'],
-    'release': ['-finline-functions'],
-    'minsize': [],
-    'custom': [],
-}
-
-d_ldc_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': ['-enable-inlining', '-Hkeep-all-bodies'],
-    'release': ['-enable-inlining', '-Hkeep-all-bodies'],
-    'minsize': [],
-    'custom': [],
-}
-
-d_dmd_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': ['-inline'],
-    'release': ['-inline'],
-    'minsize': [],
-    'custom': [],
-}
-
-mono_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': ['-optimize+'],
-    'release': ['-optimize+'],
-    'minsize': [],
-    'custom': [],
-}
-
-swift_buildtype_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': [],
-    'release': [],
-    'minsize': [],
-    'custom': [],
-}
-
 gnu_winlibs = ['-lkernel32', '-luser32', '-lgdi32', '-lwinspool', '-lshell32',
                '-lole32', '-loleaut32', '-luuid', '-lcomdlg32', '-ladvapi32']
 
@@ -279,25 +198,11 @@ clike_optimization_args: T.Dict[str, T.List[str]] = {
     's': ['-Os'],
 }
 
-cuda_optimization_args: T.Dict[str, T.List[str]] = {
-    'plain': [],
-    '0': [],
-    'g': ['-O0'],
-    '1': ['-O1'],
-    '2': ['-O2'],
-    '3': ['-O3'],
-    's': ['-O3']
-}
-
-cuda_debug_args: T.Dict[bool, T.List[str]] = {
-    False: [],
-    True: ['-g']
-}
-
 clike_debug_args: T.Dict[bool, T.List[str]] = {
     False: [],
     True: ['-g']
 }
+
 
 MSCRT_VALS = ['none', 'md', 'mdd', 'mt', 'mtd']
 
@@ -794,11 +699,23 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return []
 
     def has_multi_arguments(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
+        """Checks if the compiler has all of the arguments.
+
+        :returns:
+            A tuple of (bool, bool). The first value is whether the check
+            succeeded, and the second is whether it was retrieved from a cache
+        """
         raise EnvironmentException(
             'Language {} does not support has_multi_arguments.'.format(
                 self.get_display_language()))
 
     def has_multi_link_arguments(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
+        """Checks if the linker has all of the arguments.
+
+        :returns:
+            A tuple of (bool, bool). The first value is whether the check
+            succeeded, and the second is whether it was retrieved from a cache
+        """
         return self.linker.has_multi_arguments(args, env)
 
     def _get_compile_output(self, dirname: str, mode: CompileCheckMode) -> str:
@@ -1067,11 +984,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def bitcode_args(self) -> T.List[str]:
         return self.linker.bitcode_args()
 
-    def get_buildtype_args(self, buildtype: str) -> T.List[str]:
-        raise EnvironmentException(f'{self.id} does not implement get_buildtype_args')
-
-    def get_buildtype_linker_args(self, buildtype: str) -> T.List[str]:
-        return self.linker.get_buildtype_args(buildtype)
+    def get_optimization_link_args(self, optimization_level: str) -> T.List[str]:
+        return self.linker.get_optimization_link_args(optimization_level)
 
     def get_soname_args(self, env: 'Environment', prefix: str, shlib_name: str,
                         suffix: str, soversion: str,
@@ -1340,6 +1254,12 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
                  dependencies: T.Optional[T.List['Dependency']] = None,
                  mode: CompileCheckMode = CompileCheckMode.COMPILE,
                  disable_cache: bool = False) -> T.Tuple[bool, bool]:
+        """Run a compilation or link test to see if code can be compiled/linked.
+
+        :returns:
+            A tuple of (bool, bool). The first value is whether the check
+            succeeded, and the second is whether it was retrieved from a cache
+        """
         with self._build_wrapper(code, env, extra_args, dependencies, mode, disable_cache=disable_cache) as p:
             return p.returncode == 0, p.cached
 
@@ -1375,10 +1295,6 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
 
     def get_debug_args(self, is_debug: bool) -> T.List[str]:
         """Arguments required for a debug build."""
-        return []
-
-    def get_no_warn_args(self) -> T.List[str]:
-        """Arguments to completely disable warnings."""
         return []
 
     def needs_static_linker(self) -> bool:

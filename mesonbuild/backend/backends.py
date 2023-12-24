@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2016 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -358,16 +348,16 @@ class Backend:
             # In AIX, if we archive .so, the blibpath must link to archived shared library otherwise to the .so file.
             if mesonlib.is_aix() and target.aix_so_archive:
                 link_lib = re.sub('[.][a]([.]?([0-9]+))*([.]?([a-z]+))*', '.a', link_lib.replace('.so', '.a'))
-            return os.path.join(self.get_target_dir(target), link_lib)
+            return Path(self.get_target_dir(target), link_lib).as_posix()
         elif isinstance(target, build.StaticLibrary):
-            return os.path.join(self.get_target_dir(target), target.get_filename())
+            return Path(self.get_target_dir(target), target.get_filename()).as_posix()
         elif isinstance(target, (build.CustomTarget, build.CustomTargetIndex)):
             if not target.is_linkable_target():
                 raise MesonException(f'Tried to link against custom target "{target.name}", which is not linkable.')
-            return os.path.join(self.get_target_dir(target), target.get_filename())
+            return Path(self.get_target_dir(target), target.get_filename()).as_posix()
         elif isinstance(target, build.Executable):
             if target.import_filename:
-                return os.path.join(self.get_target_dir(target), target.get_import_filename())
+                return Path(self.get_target_dir(target), target.get_import_filename()).as_posix()
             else:
                 return None
         raise AssertionError(f'BUG: Tried to link to {target!r} which is not linkable')
@@ -920,7 +910,7 @@ class Backend:
                 if comp.language in LANGS_CANT_UNITY:
                     sources += srcs
                     continue
-                for i in range(len(srcs) // unity_size + 1):
+                for i in range((len(srcs) + unity_size - 1) // unity_size):
                     _src = self.get_unity_source_file(extobj.target,
                                                       comp.get_default_suffix(), i)
                     sources.append(_src)
@@ -986,7 +976,7 @@ class Backend:
             return compiler.get_no_stdinc_args()
         return []
 
-    def generate_basic_compiler_args(self, target: build.BuildTarget, compiler: 'Compiler', no_warn_args: bool = False) -> 'CompilerArgs':
+    def generate_basic_compiler_args(self, target: build.BuildTarget, compiler: 'Compiler') -> 'CompilerArgs':
         # Create an empty commands list, and start adding arguments from
         # various sources in the order in which they must override each other
         # starting from hard-coded defaults followed by build options and so on.
@@ -999,27 +989,17 @@ class Backend:
         commands += self.get_no_stdlib_args(target, compiler)
         # Add things like /NOLOGO or -pipe; usually can't be overridden
         commands += compiler.get_always_args()
-        # Only add warning-flags by default if the buildtype enables it, and if
-        # we weren't explicitly asked to not emit warnings (for Vala, f.ex)
-        if no_warn_args:
-            commands += compiler.get_no_warn_args()
-        else:
-            # warning_level is a string, but mypy can't determine that
-            commands += compiler.get_warn_args(T.cast('str', target.get_option(OptionKey('warning_level'))))
+        # warning_level is a string, but mypy can't determine that
+        commands += compiler.get_warn_args(T.cast('str', target.get_option(OptionKey('warning_level'))))
         # Add -Werror if werror=true is set in the build options set on the
         # command-line or default_options inside project(). This only sets the
         # action to be done for warnings if/when they are emitted, so it's ok
-        # to set it after get_no_warn_args() or get_warn_args().
+        # to set it after or get_warn_args().
         if target.get_option(OptionKey('werror')):
             commands += compiler.get_werror_args()
         # Add compile args for c_* or cpp_* build options set on the
         # command-line or default_options inside project().
         commands += compiler.get_option_compile_args(copt_proxy)
-
-        # Add buildtype args: optimization level, debugging, etc.
-        buildtype = target.get_option(OptionKey('buildtype'))
-        assert isinstance(buildtype, str), 'for mypy'
-        commands += compiler.get_buildtype_args(buildtype)
 
         optimization = target.get_option(OptionKey('optimization'))
         assert isinstance(optimization, str), 'for mypy'

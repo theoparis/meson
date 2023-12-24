@@ -4,8 +4,7 @@
 """Helpers for strict type checking."""
 
 from __future__ import annotations
-import os
-import re
+import itertools, os, re
 import typing as T
 
 from .. import compilers
@@ -30,7 +29,7 @@ if T.TYPE_CHECKING:
     from ..mesonlib import EnvInitValueType
 
     _FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
-    PkgConfigDefineType = T.Optional[T.Tuple[str, str]]
+    PkgConfigDefineType = T.Optional[T.Tuple[T.Tuple[str, str], ...]]
     SourcesVarargsType = T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList, StructuredSources, ExtractedObjects, BuildTarget]]
 
 
@@ -554,16 +553,13 @@ def _objects_validator(vals: T.List[ObjectTypes]) -> T.Optional[str]:
     non_objects: T.List[str] = []
 
     for val in vals:
-        if isinstance(val, ExtractedObjects):
+        if isinstance(val, (str, File, ExtractedObjects)):
             continue
-        elif isinstance(val, (str, File)):
-            if not compilers.is_object(val):
-                non_objects.append(str(val))
         else:
             non_objects.extend(o for o in val.get_outputs() if not compilers.is_object(o))
 
     if non_objects:
-        return f'File{"s" if len(non_objects) > 1 else ""}: "{", ".join(non_objects)}" are not objects'
+        return f'{", ".join(non_objects)!r} are not objects'
 
     return None
 
@@ -601,7 +597,7 @@ def _name_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
 
 def _name_suffix_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
     if arg == '':
-        return 'must nt be a empty string. An empty array may be passed if you want Meson to use the default behavior.'
+        return 'must not be a empty string. An empty array may be passed if you want Meson to use the default behavior.'
     return _name_validator(arg)
 
 
@@ -844,10 +840,16 @@ BUILD_TARGET_KWS = [
     )
 ]
 
+def _pkgconfig_define_convertor(x: T.List[str]) -> PkgConfigDefineType:
+    if x:
+        keys = itertools.islice(x, 0, None, 2)
+        vals = itertools.islice(x, 1, None, 2)
+        return tuple(zip(keys, vals))
+    return None
+
 PKGCONFIG_DEFINE_KW: KwargInfo = KwargInfo(
     'pkgconfig_define',
     ContainerTypeInfo(list, str, pairs=True),
     default=[],
-    validator=lambda x: 'must be of length 2 or empty' if len(x) not in {0, 2} else None,
-    convertor=lambda x: tuple(x) if x else None
+    convertor=_pkgconfig_define_convertor,
 )

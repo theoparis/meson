@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2018 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 import argparse, datetime, glob, json, os, platform, shutil, sys, tempfile, time
@@ -206,18 +196,12 @@ class MesonApp:
         # even to write `T.Callable[[*mlog.TV_Loggable], None]`
         logger_fun = T.cast('T.Callable[[mlog.TV_Loggable, mlog.TV_Loggable], None]',
                             (mlog.log if env.is_cross_build() else mlog.debug))
-        build_machine = intr.builtin['build_machine']
-        host_machine = intr.builtin['host_machine']
-        target_machine = intr.builtin['target_machine']
-        assert isinstance(build_machine, interpreter.MachineHolder)
-        assert isinstance(host_machine, interpreter.MachineHolder)
-        assert isinstance(target_machine, interpreter.MachineHolder)
-        logger_fun('Build machine cpu family:', mlog.bold(build_machine.cpu_family_method([], {})))
-        logger_fun('Build machine cpu:', mlog.bold(build_machine.cpu_method([], {})))
-        mlog.log('Host machine cpu family:', mlog.bold(host_machine.cpu_family_method([], {})))
-        mlog.log('Host machine cpu:', mlog.bold(host_machine.cpu_method([], {})))
-        logger_fun('Target machine cpu family:', mlog.bold(target_machine.cpu_family_method([], {})))
-        logger_fun('Target machine cpu:', mlog.bold(target_machine.cpu_method([], {})))
+        logger_fun('Build machine cpu family:', mlog.bold(env.machines.build.cpu_family))
+        logger_fun('Build machine cpu:', mlog.bold(env.machines.build.cpu))
+        mlog.log('Host machine cpu family:', mlog.bold(env.machines.host.cpu_family))
+        mlog.log('Host machine cpu:', mlog.bold(env.machines.host.cpu))
+        logger_fun('Target machine cpu family:', mlog.bold(env.machines.target.cpu_family))
+        logger_fun('Target machine cpu:', mlog.bold(env.machines.target.cpu))
         try:
             if self.options.profile:
                 fname = os.path.join(self.build_dir, 'meson-logs', 'profile-interpreter.log')

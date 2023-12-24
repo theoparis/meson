@@ -1,16 +1,6 @@
-# Copyright 2012-2022 The Meson development team
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2012-2023 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 
@@ -64,7 +54,7 @@ class CLikeCompilerArgs(arglist.CompilerArgs):
 
     # NOTE: not thorough. A list of potential corner cases can be found in
     # https://github.com/mesonbuild/meson/pull/4593#pullrequestreview-182016038
-    dedup1_prefixes = ('-l', '-Wl,-l', '-Wl,--export-dynamic')
+    dedup1_prefixes = ('-l', '-Wl,-l', '-Wl,--export-dynamic', '-Wl,-rpath')
     dedup1_suffixes = ('.lib', '.dll', '.so', '.dylib', '.a')
     dedup1_args = ('-c', '-S', '-E', '-pipe', '-pthread')
 
@@ -176,10 +166,6 @@ class CLikeCompiler(Compiler):
     def get_warn_args(self, level: str) -> T.List[str]:
         # TODO: this should be an enum
         return self.warn_args[level]
-
-    def get_no_warn_args(self) -> T.List[str]:
-        # Almost every compiler uses this for disabling warnings
-        return ['-w']
 
     def get_depfile_suffix(self) -> str:
         return 'd'

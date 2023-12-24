@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from configparser import ConfigParser
 from pathlib import Path
@@ -618,7 +607,8 @@ class InternalTests(unittest.TestCase):
             out = name.with_suffix('.o')
             with src.open('w', encoding='utf-8') as f:
                 f.write('int meson_foobar (void) { return 0; }')
-            subprocess.check_call(['clang', '-c', str(src), '-o', str(out)])
+            # use of x86_64 is hardcoded in run_tests.py:get_fake_env()
+            subprocess.check_call(['clang', '-c', str(src), '-o', str(out), '-arch', 'x86_64'])
             subprocess.check_call(['ar', 'csr', str(name), str(out)])
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1012,19 +1002,30 @@ class InternalTests(unittest.TestCase):
     def test_validate_json(self) -> None:
         """Validate the json schema for the test cases."""
         try:
-            from jsonschema import validate, ValidationError
+            from fastjsonschema import compile, JsonSchemaValueException as JsonSchemaFailure
+            fast = True
         except ImportError:
-            if is_ci():
-                raise
-            raise unittest.SkipTest('Python jsonschema module not found.')
+            try:
+                from jsonschema import validate, ValidationError as JsonSchemaFailure
+                fast = False
+            except:
+                if is_ci():
+                    raise
+                raise unittest.SkipTest('neither Python fastjsonschema nor jsonschema module not found.')
 
-        schema = json.loads(Path('data/test.schema.json').read_text(encoding='utf-8'))
+        with open('data/test.schema.json', 'r', encoding='utf-8') as f:
+            data = json.loads(f.read())
+
+        if fast:
+            schema_validator = compile(data)
+        else:
+            schema_validator = lambda x: validate(x, schema=data)
 
         errors: T.List[T.Tuple[Path, Exception]] = []
         for p in Path('test cases').glob('**/test.json'):
             try:
-                validate(json.loads(p.read_text(encoding='utf-8')), schema=schema)
-            except ValidationError as e:
+                schema_validator(json.loads(p.read_text(encoding='utf-8')))
+            except JsonSchemaFailure as e:
                 errors.append((p.resolve(), e))
 
         for f, e in errors:
