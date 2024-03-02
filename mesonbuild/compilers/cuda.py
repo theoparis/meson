@@ -192,7 +192,13 @@ class CudaCompiler(Compiler):
         self.exe_wrapper = exe_wrapper
         self.host_compiler = host_compiler
         self.base_options = host_compiler.base_options
-        self.warn_args = {level: self._to_host_flags(flags) for level, flags in host_compiler.warn_args.items()}
+        # -Wpedantic generates useless churn due to nvcc's dual compilation model producing
+        # a temporary host C++ file that includes gcc-style line directives:
+        # https://stackoverflow.com/a/31001220
+        self.warn_args = {
+            level: self._to_host_flags(list(f for f in flags if f != '-Wpedantic'))
+            for level, flags in host_compiler.warn_args.items()
+        }
 
     @classmethod
     def _shield_nvcc_list_arg(cls, arg: str, listmode: bool = True) -> str:
@@ -743,6 +749,15 @@ class CudaCompiler(Compiler):
 
     def get_output_args(self, target: str) -> T.List[str]:
         return ['-o', target]
+
+    def get_dependency_gen_args(self, outtarget: str, outfile: str) -> T.List[str]:
+        if version_compare(self.version, '>= 10.2'):
+            # According to nvcc Documentation, `-MD` option is added after 10.2
+            # Reference: [CUDA 10.1](https://docs.nvidia.com/cuda/archive/10.1/cuda-compiler-driver-nvcc/index.html#options-for-specifying-compilation-phase-generate-nonsystem-dependencies)
+            # Reference: [CUDA 10.2](https://docs.nvidia.com/cuda/archive/10.2/cuda-compiler-driver-nvcc/index.html#options-for-specifying-compilation-phase-generate-nonsystem-dependencies)
+            return ['-MD', '-MT', outtarget, '-MF', outfile]
+        else:
+            return []
 
     def get_std_exe_link_args(self) -> T.List[str]:
         return self._to_host_flags(self.host_compiler.get_std_exe_link_args(), _Phase.LINKER)

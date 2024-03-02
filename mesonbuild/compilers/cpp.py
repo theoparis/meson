@@ -242,6 +242,10 @@ class ClangCPPCompiler(_StdCPPLibMixin, ClangCompiler, CPPCompiler):
         opts = CPPCompiler.get_options(self)
         key = OptionKey('key', machine=self.for_machine, lang=self.language)
         opts.update({
+            key.evolve('debugstl'): coredata.UserBooleanOption(
+                'STL debug mode',
+                False,
+            ),
             key.evolve('eh'): coredata.UserComboOption(
                 'C++ exception handling type.',
                 ['none', 'default', 'a', 's', 'sc'],
@@ -277,6 +281,15 @@ class ClangCPPCompiler(_StdCPPLibMixin, ClangCompiler, CPPCompiler):
 
         non_msvc_eh_options(options[key.evolve('eh')].value, args)
 
+        if options[key.evolve('debugstl')].value:
+            args.append('-D_GLIBCXX_DEBUG=1')
+
+            # We can't do _LIBCPP_DEBUG because it's unreliable unless libc++ was built with it too:
+            # https://discourse.llvm.org/t/building-a-program-with-d-libcpp-debug-1-against-a-libc-that-is-not-itself-built-with-that-define/59176/3
+            # Note that unlike _GLIBCXX_DEBUG, _MODE_DEBUG doesn't break ABI. It's just slow.
+            if version_compare(self.version, '>=18'):
+                args.append('-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG')
+
         if not options[key.evolve('rtti')].value:
             args.append('-fno-rtti')
 
@@ -292,6 +305,20 @@ class ClangCPPCompiler(_StdCPPLibMixin, ClangCompiler, CPPCompiler):
                 assert isinstance(l, str)
             return libs
         return []
+
+    def get_assert_args(self, disable: bool) -> T.List[str]:
+        args: T.List[str] = []
+        if disable:
+            return ['-DNDEBUG']
+
+        # Clang supports both libstdc++ and libc++
+        args.append('-D_GLIBCXX_ASSERTIONS=1')
+        if version_compare(self.version, '>=18'):
+            args.append('-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE')
+        elif version_compare(self.version, '>=15'):
+            args.append('-D_LIBCPP_ENABLE_ASSERTIONS=1')
+
+        return args
 
 
 class ArmLtdClangCPPCompiler(ClangCPPCompiler):
@@ -461,6 +488,14 @@ class GnuCPPCompiler(_StdCPPLibMixin, GnuCompiler, CPPCompiler):
                 assert isinstance(l, str)
             return libs
         return []
+
+    def get_assert_args(self, disable: bool) -> T.List[str]:
+        if disable:
+            return ['-DNDEBUG']
+
+        # XXX: This needs updating if/when GCC starts to support libc++.
+        # It currently only does so via an experimental configure arg.
+        return ['-D_GLIBCXX_ASSERTIONS=1']
 
     def get_pch_use_args(self, pch_dir: str, header: str) -> T.List[str]:
         return ['-fpch-preprocess', '-include', os.path.basename(header)]

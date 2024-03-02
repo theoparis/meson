@@ -14,7 +14,6 @@ import json
 import os
 import pickle
 import re
-import shlex
 import subprocess
 import typing as T
 
@@ -67,16 +66,6 @@ def cmd_quote(arg: str) -> str:
 
     return arg
 
-def gcc_rsp_quote(s: str) -> str:
-    # see: the function buildargv() in libiberty
-    #
-    # this differs from sh-quoting in that a backslash *always* escapes the
-    # following character, even inside single quotes.
-
-    s = s.replace('\\', '\\\\')
-
-    return shlex.quote(s)
-
 # How ninja executes command lines differs between Unix and Windows
 # (see https://ninja-build.org/manual.html#ref_rule_command)
 if mesonlib.is_windows():
@@ -88,6 +77,15 @@ else:
     execute_wrapper = []
     rmfile_prefix = ['rm', '-f', '{}', '&&']
 
+def gcc_rsp_quote(s: str) -> str:
+    # see: the function buildargv() in libiberty
+    #
+    # this differs from sh-quoting in that a backslash *always* escapes the
+    # following character, even inside single quotes.
+
+    s = s.replace('\\', '\\\\')
+
+    return quote_func(s)
 
 def get_rsp_threshold() -> int:
     '''Return a conservative estimate of the commandline size in bytes
@@ -632,10 +630,11 @@ class NinjaBackend(backends.Backend):
             key = OptionKey('b_coverage')
             if (key in self.environment.coredata.options and
                     self.environment.coredata.options[key].value):
-                gcovr_exe, gcovr_version, lcov_exe, lcov_version, genhtml_exe, _ = environment.find_coverage_tools()
+                gcovr_exe, gcovr_version, lcov_exe, lcov_version, genhtml_exe, llvm_cov_exe = environment.find_coverage_tools(self.environment.coredata)
+                mlog.debug(f'Using {gcovr_exe} ({gcovr_version}), {lcov_exe} and {llvm_cov_exe} for code coverage')
                 if gcovr_exe or (lcov_exe and genhtml_exe):
                     self.add_build_comment(NinjaComment('Coverage rules'))
-                    self.generate_coverage_rules(gcovr_exe, gcovr_version)
+                    self.generate_coverage_rules(gcovr_exe, gcovr_version, llvm_cov_exe)
                     mlog.log_timestamp("Coverage rules generated")
                 else:
                     # FIXME: since we explicitly opted in, should this be an error?
@@ -720,6 +719,8 @@ class NinjaBackend(backends.Backend):
         for dep in itertools.chain(target.link_targets, target.link_whole_targets):
             if isinstance(dep, (build.StaticLibrary, build.SharedLibrary)):
                 header_deps += self.get_generated_headers(dep)
+        if isinstance(target, build.CompileTarget):
+            header_deps.extend(target.get_generated_headers())
         target.cached_generated_headers = header_deps
         return header_deps
 
@@ -1208,9 +1209,15 @@ class NinjaBackend(backends.Backend):
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
 
-    def generate_coverage_command(self, elem, outputs):
+    def generate_coverage_command(self, elem, outputs: T.List[str], gcovr_exe: T.Optional[str], llvm_cov_exe: T.Optional[str]):
         targets = self.build.get_targets().values()
         use_llvm_cov = False
+        exe_args = []
+        if gcovr_exe is not None:
+            exe_args += ['--gcov', gcovr_exe]
+        if llvm_cov_exe is not None:
+            exe_args += ['--llvm-cov', llvm_cov_exe]
+
         for target in targets:
             if not hasattr(target, 'compilers'):
                 continue
@@ -1226,35 +1233,36 @@ class NinjaBackend(backends.Backend):
                                     self.build.get_subproject_dir()),
                        self.environment.get_build_dir(),
                        self.environment.get_log_dir()] +
-                      (['--use_llvm_cov'] if use_llvm_cov else []))
+                      exe_args +
+                      (['--use-llvm-cov'] if use_llvm_cov else []))
 
-    def generate_coverage_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str]):
+    def generate_coverage_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str], llvm_cov_exe: T.Optional[str]):
         e = self.create_phony_target('coverage', 'CUSTOM_COMMAND', 'PHONY')
-        self.generate_coverage_command(e, [])
+        self.generate_coverage_command(e, [], gcovr_exe, llvm_cov_exe)
         e.add_item('description', 'Generates coverage reports')
         self.add_build(e)
-        self.generate_coverage_legacy_rules(gcovr_exe, gcovr_version)
+        self.generate_coverage_legacy_rules(gcovr_exe, gcovr_version, llvm_cov_exe)
 
-    def generate_coverage_legacy_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str]):
+    def generate_coverage_legacy_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str], llvm_cov_exe: T.Optional[str]):
         e = self.create_phony_target('coverage-html', 'CUSTOM_COMMAND', 'PHONY')
-        self.generate_coverage_command(e, ['--html'])
+        self.generate_coverage_command(e, ['--html'], gcovr_exe, llvm_cov_exe)
         e.add_item('description', 'Generates HTML coverage report')
         self.add_build(e)
 
         if gcovr_exe:
             e = self.create_phony_target('coverage-xml', 'CUSTOM_COMMAND', 'PHONY')
-            self.generate_coverage_command(e, ['--xml'])
+            self.generate_coverage_command(e, ['--xml'], gcovr_exe, llvm_cov_exe)
             e.add_item('description', 'Generates XML coverage report')
             self.add_build(e)
 
             e = self.create_phony_target('coverage-text', 'CUSTOM_COMMAND', 'PHONY')
-            self.generate_coverage_command(e, ['--text'])
+            self.generate_coverage_command(e, ['--text'], gcovr_exe, llvm_cov_exe)
             e.add_item('description', 'Generates text coverage report')
             self.add_build(e)
 
             if mesonlib.version_compare(gcovr_version, '>=4.2'):
                 e = self.create_phony_target('coverage-sonarqube', 'CUSTOM_COMMAND', 'PHONY')
-                self.generate_coverage_command(e, ['--sonarqube'])
+                self.generate_coverage_command(e, ['--sonarqube'], gcovr_exe, llvm_cov_exe)
                 e.add_item('description', 'Generates Sonarqube XML coverage report')
                 self.add_build(e)
 
@@ -1693,11 +1701,21 @@ class NinjaBackend(backends.Backend):
                 # Install GIR to default location if requested by user
                 if len(target.install_dir) > 3 and target.install_dir[3] is True:
                     target.install_dir[3] = os.path.join(self.environment.get_datadir(), 'gir-1.0')
-        # Detect gresources and add --gresources arguments for each
+        # Detect gresources and add --gresources/--gresourcesdir arguments for each
+        gres_dirs = []
         for gensrc in other_src[1].values():
             if isinstance(gensrc, modules.GResourceTarget):
                 gres_xml, = self.get_custom_target_sources(gensrc)
                 args += ['--gresources=' + gres_xml]
+                for source_dir in gensrc.source_dirs:
+                    gres_dirs += [os.path.join(self.get_target_dir(gensrc), source_dir)]
+                # Ensure that resources are built before vala sources
+                # This is required since vala code using [GtkTemplate] effectively depends on .ui files
+                # GResourceHeaderTarget is not suitable due to lacking depfile
+                gres_c, = gensrc.get_outputs()
+                extra_dep_files += [os.path.join(self.get_target_dir(gensrc), gres_c)]
+        for gres_dir in OrderedSet(gres_dirs):
+            args += [f'--gresourcesdir={gres_dir}']
         dependency_vapis = self.determine_dep_vapis(target)
         extra_dep_files += dependency_vapis
         extra_dep_files.extend(self.get_target_depend_files(target))
@@ -1990,7 +2008,7 @@ class NinjaBackend(backends.Backend):
             # "-l" argument and does not rely on platform specific dynamic linker.
             lib = self.get_target_filename_for_linking(d)
             link_whole = d in target.link_whole_targets
-            if isinstance(target, build.StaticLibrary):
+            if isinstance(target, build.StaticLibrary) or (isinstance(target, build.Executable) and rustc.get_crt_static()):
                 static = isinstance(d, build.StaticLibrary)
                 libname = os.path.basename(lib) if verbatim else d.name
                 _link_library(libname, static, bundle=link_whole)
@@ -2172,6 +2190,7 @@ class NinjaBackend(backends.Backend):
                 srctreedir = os.path.normpath(os.path.join(self.environment.get_build_dir(), self.build_to_src, expdir))
                 sargs = swiftc.get_include_args(srctreedir, False)
                 compile_args += sargs
+        compile_args += target.get_extra_args('swift')
         link_args = swiftc.get_output_args(os.path.join(self.environment.get_build_dir(), self.get_target_filename(target)))
         link_args += self.build.get_project_link_args(swiftc, target.subproject, target.for_machine)
         link_args += self.build.get_global_link_args(swiftc, target.for_machine)
@@ -2447,7 +2466,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             # See also: https://github.com/ninja-build/ninja/pull/2275
             options['extra'] = 'restat = 1'
         rule = self.compiler_to_rule_name(compiler)
-        depargs = NinjaCommandArg.list(compiler.get_dependency_gen_args('$out', '$DEPFILE'), Quoting.none)
+        if langname == 'cuda':
+            # for cuda, we manually escape target name ($out) as $CUDA_ESCAPED_TARGET because nvcc doesn't support `-MQ` flag
+            depargs = NinjaCommandArg.list(compiler.get_dependency_gen_args('$CUDA_ESCAPED_TARGET', '$DEPFILE'), Quoting.none)
+        else:
+            depargs = NinjaCommandArg.list(compiler.get_dependency_gen_args('$out', '$DEPFILE'), Quoting.none)
         command = compiler.get_exelist()
         args = ['$ARGS'] + depargs + NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none) + compiler.get_compile_only_args() + ['$in']
         description = f'Compiling {compiler.get_display_language()} object $out'
@@ -3002,6 +3025,28 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             element.add_orderdep(i)
         if dep_file:
             element.add_item('DEPFILE', dep_file)
+        if compiler.get_language() == 'cuda':
+            # for cuda, we manually escape target name ($out) as $CUDA_ESCAPED_TARGET because nvcc doesn't support `-MQ` flag
+            def quote_make_target(targetName: str) -> str:
+                # this escape implementation is taken from llvm
+                result = ''
+                for (i, c) in enumerate(targetName):
+                    if c in {' ', '\t'}:
+                        # Escape the preceding backslashes
+                        for j in range(i - 1, -1, -1):
+                            if targetName[j] == '\\':
+                                result += '\\'
+                            else:
+                                break
+                        # Escape the space/tab
+                        result += '\\'
+                    elif c == '$':
+                        result += '$'
+                    elif c == '#':
+                        result += '\\'
+                    result += c
+                return result
+            element.add_item('CUDA_ESCAPED_TARGET', quote_make_target(rel_obj))
         element.add_item('ARGS', commands)
 
         self.add_dependency_scanner_entries_to_element(target, compiler, element, src)
@@ -3537,7 +3582,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'scanbuild', self.environment.source_dir, self.environment.build_dir, self.build.get_subproject_dir()] + \
-            self.environment.get_build_command() + self.get_user_option_args()
+            self.environment.get_build_command() + ['setup'] + self.get_user_option_args()
         elem = self.create_phony_target('scan-build', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')

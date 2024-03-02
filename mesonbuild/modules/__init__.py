@@ -73,7 +73,7 @@ class ModuleState:
     def find_program(self, prog: T.Union[mesonlib.FileOrString, T.List[mesonlib.FileOrString]],
                      required: bool = True,
                      version_func: T.Optional[ProgramVersionFunc] = None,
-                     wanted: T.Optional[str] = None, silent: bool = False,
+                     wanted: T.Union[str, T.List[str]] = '', silent: bool = False,
                      for_machine: MachineChoice = MachineChoice.HOST) -> T.Union[ExternalProgram, build.Executable, OverrideProgram]:
         if not isinstance(prog, list):
             prog = [prog]
@@ -100,7 +100,7 @@ class ModuleState:
                 progobj = ExternalProgram(value)
                 if not progobj.found():
                     msg = (f'Dependency {depname!r} tool variable {varname!r} contains erroneous value: {value!r}\n\n'
-                           'This is a distributor issue -- please report it to your {depname} provider.')
+                           f'This is a distributor issue -- please report it to your {depname} provider.')
                     raise mesonlib.MesonException(msg)
                 return progobj
 
@@ -254,7 +254,7 @@ class ModuleReturnValue:
         self.new_objects: T.List[T.Union['TYPE_var', 'mesonlib.ExecutableSerialisation']] = new_objects
 
 class GResourceTarget(build.CustomTarget):
-    pass
+    source_dirs: T.List[str] = []
 
 class GResourceHeaderTarget(build.CustomTarget):
     pass

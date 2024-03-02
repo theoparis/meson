@@ -14,6 +14,7 @@ import json
 import os
 import pickle
 import re
+import shlex
 import shutil
 import typing as T
 import hashlib
@@ -26,8 +27,7 @@ from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS, detect
 from ..mesonlib import (
     File, MachineChoice, MesonException, OrderedSet,
-    classify_unity_sources, OptionKey, join_args,
-    ExecutableSerialisation
+    ExecutableSerialisation, classify_unity_sources, OptionKey
 )
 
 if T.TYPE_CHECKING:
@@ -764,7 +764,7 @@ class Backend:
         srcdir = self.environment.get_source_dir()
 
         for dep in target.external_deps:
-            if dep.type_name not in {'library', 'pkgconfig'}:
+            if dep.type_name not in {'library', 'pkgconfig', 'cmake'}:
                 continue
             for libpath in dep.link_args:
                 # For all link args that are absolute paths to a library file, add RPATH args
@@ -780,7 +780,11 @@ class Backend:
                 # Windows doesn't support rpaths, but we use this function to
                 # emulate rpaths by setting PATH
                 # .dll is there for mingw gcc
-                if os.path.splitext(libpath)[1] not in {'.dll', '.lib', '.so', '.dylib'}:
+                # .so's may be extended with version information, e.g. libxyz.so.1.2.3
+                if not (
+                    os.path.splitext(libpath)[1] in {'.dll', '.lib', '.so', '.dylib'}
+                    or re.match(r'.+\.so(\.|$)', os.path.basename(libpath))
+                ):
                     continue
 
                 try:
@@ -830,7 +834,7 @@ class Backend:
             fname = fname.replace(ch, '_')
         return hashed + fname
 
-    def object_filename_from_source(self, target: build.BuildTarget, source: 'FileOrString') -> str:
+    def object_filename_from_source(self, target: build.BuildTarget, source: 'FileOrString', targetdir: T.Optional[str] = None) -> str:
         assert isinstance(source, mesonlib.File)
         if isinstance(target, build.CompileTarget):
             return target.sources_map[source]
@@ -851,9 +855,8 @@ class Backend:
         elif source.is_built:
             if os.path.isabs(rel_src):
                 rel_src = rel_src[len(build_dir) + 1:]
-            targetdir = self.get_target_private_dir(target)
             # A meson- prefixed directory is reserved; hopefully no-one creates a file name with such a weird prefix.
-            gen_source = 'meson-generated_' + os.path.relpath(rel_src, targetdir)
+            gen_source = 'meson-generated_' + os.path.relpath(rel_src, self.get_target_private_dir(target))
         else:
             if os.path.isabs(rel_src):
                 # Use the absolute path directly to avoid file name conflicts
@@ -862,7 +865,10 @@ class Backend:
                 gen_source = os.path.relpath(os.path.join(build_dir, rel_src),
                                              os.path.join(self.environment.get_source_dir(), target.get_subdir()))
         machine = self.environment.machines[target.for_machine]
-        return self.canonicalize_filename(gen_source) + '.' + machine.get_object_suffix()
+        ret = self.canonicalize_filename(gen_source) + '.' + machine.get_object_suffix()
+        if targetdir is not None:
+            return os.path.join(targetdir, ret)
+        return ret
 
     def _determine_ext_objs(self, extobj: 'build.ExtractedObjects', proj_dir_to_build_root: str) -> T.List[str]:
         result: T.List[str] = []
@@ -916,8 +922,8 @@ class Backend:
                     sources.append(_src)
 
         for osrc in sources:
-            objname = self.object_filename_from_source(extobj.target, osrc)
-            objpath = os.path.join(proj_dir_to_build_root, targetdir, objname)
+            objname = self.object_filename_from_source(extobj.target, osrc, targetdir)
+            objpath = os.path.join(proj_dir_to_build_root, objname)
             result.append(objpath)
 
         return result
@@ -1154,7 +1160,7 @@ class Backend:
         return results
 
     def determine_windows_extra_paths(
-            self, target: T.Union[build.BuildTarget, build.CustomTarget, programs.ExternalProgram, mesonlib.File, str],
+            self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex, programs.ExternalProgram, mesonlib.File, str],
             extra_bdeps: T.Sequence[T.Union[build.BuildTarget, build.CustomTarget]]) -> T.List[str]:
         """On Windows there is no such thing as an rpath.
 
@@ -1263,7 +1269,7 @@ class Backend:
                                    t.is_parallel, cmd_args, t_env,
                                    t.should_fail, t.timeout, t.workdir,
                                    extra_paths, t.protocol, t.priority,
-                                   isinstance(exe, build.Target),
+                                   isinstance(exe, (build.Target, build.CustomTargetIndex)),
                                    isinstance(exe, build.Executable),
                                    [x.get_id() for x in depends],
                                    self.environment.coredata.version,
@@ -1592,28 +1598,31 @@ class Backend:
         cmd = [i.replace('\\', '/') for i in cmd]
         return inputs, outputs, cmd
 
+    def get_introspect_command(self) -> str:
+        return ' '.join(shlex.quote(x) for x in self.environment.get_build_command() + ['introspect'])
+
     def get_run_target_env(self, target: build.RunTarget) -> mesonlib.EnvironmentVariables:
         env = target.env if target.env else mesonlib.EnvironmentVariables()
         if target.default_env:
-            introspect_cmd = join_args(self.environment.get_build_command() + ['introspect'])
             env.set('MESON_SOURCE_ROOT', [self.environment.get_source_dir()])
             env.set('MESON_BUILD_ROOT', [self.environment.get_build_dir()])
             env.set('MESON_SUBDIR', [target.subdir])
-            env.set('MESONINTROSPECT', [introspect_cmd])
+            env.set('MESONINTROSPECT', [self.get_introspect_command()])
         return env
 
     def run_postconf_scripts(self) -> None:
         from ..scripts.meson_exe import run_exe
-        introspect_cmd = join_args(self.environment.get_build_command() + ['introspect'])
         env = {'MESON_SOURCE_ROOT': self.environment.get_source_dir(),
                'MESON_BUILD_ROOT': self.environment.get_build_dir(),
-               'MESONINTROSPECT': introspect_cmd,
+               'MESONINTROSPECT': self.get_introspect_command(),
                }
 
         for s in self.build.postconf_scripts:
             name = ' '.join(s.cmd_args)
             mlog.log(f'Running postconf script {name!r}')
-            run_exe(s, env)
+            rc = run_exe(s, env)
+            if rc != 0:
+                raise MesonException(f'Postconf script \'{name}\' failed with exit code {rc}.')
 
     def create_install_data(self) -> InstallData:
         strip_bin = self.environment.lookup_binary_entry(MachineChoice.HOST, 'strip')
@@ -2008,7 +2017,9 @@ class Backend:
     def compiler_to_generator(self, target: build.BuildTarget,
                               compiler: 'Compiler',
                               sources: _ALL_SOURCES_TYPE,
-                              output_templ: str) -> build.GeneratedList:
+                              output_templ: str,
+                              depends: T.Optional[T.List[T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex]]] = None,
+                              ) -> build.GeneratedList:
         '''
         Some backends don't support custom compilers. This is a convenience
         method to convert a Compiler to a Generator.
@@ -2023,9 +2034,15 @@ class Backend:
         commands += compiler.get_compile_only_args() + ['@INPUT@']
         commands += self.get_source_dir_include_args(target, compiler)
         commands += self.get_build_dir_include_args(target, compiler)
-        generator = build.Generator(exe, args + commands.to_native(), [output_templ], depfile='@PLAINNAME@.d')
+        # Add per-target compile args, f.ex, `c_args : ['-DFOO']`. We set these
+        # near the end since these are supposed to override everything else.
+        commands += self.escape_extra_args(target.get_extra_args(compiler.get_language()))
+        generator = build.Generator(exe, args + commands.to_native(),
+                                    [output_templ], depfile='@PLAINNAME@.d',
+                                    depends=depends)
         return generator.process_files(sources, self.interpreter)
 
     def compile_target_to_generator(self, target: build.CompileTarget) -> build.GeneratedList:
         all_sources = T.cast('_ALL_SOURCES_TYPE', target.sources) + T.cast('_ALL_SOURCES_TYPE', target.generated)
-        return self.compiler_to_generator(target, target.compiler, all_sources, target.output_templ)
+        return self.compiler_to_generator(target, target.compiler, all_sources,
+                                          target.output_templ, target.depends)

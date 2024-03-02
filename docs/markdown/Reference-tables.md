@@ -86,6 +86,7 @@ For languages that don't have separate dynamic linkers such as C# and Java, the
 | Value               | Comment                         |
 | -----               | -------                         |
 | MESONINTROSPECT     | Command to run to run the introspection command, may be of the form `python /path/to/meson introspect`, user is responsible for splitting the path if necessary. |
+| MESONREWRITE        | Command to run to run the rewriting command, only set when running `dist` scripts |
 | MESON_BUILD_ROOT    | Absolute path to the build dir  |
 | MESON_DIST_ROOT     | Points to the root of the staging directory, only set when running `dist` scripts |
 | MESON_SOURCE_ROOT   | Absolute path to the source dir |
@@ -375,10 +376,11 @@ machine](#Environment-variables-per-machine) section for details.
 | Rust          | RUSTC    | RUSTC_LD  | Before 0.54 RUST_LD*                        |
 | Vala          | VALAC    |           | Use CC_LD. Vala transpiles to C             |
 | C#            | CSC      | CSC       | The linker is the compiler                  |
+| Cython        | CYTHON   |           |                                             |
 | nasm          | NASM     |           | Uses the C linker                           |
 
 *The old environment variables are still supported, but are deprecated
-and will be removed in a future version of Meson.*
+and will be removed in a future version of Meson.
 
 *changed in 1.3.0* Paths with spaces were split unconditionally to extract
 components such as the [path to Ccache](Feature-autodetection.md#ccache),

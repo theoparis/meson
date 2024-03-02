@@ -476,9 +476,8 @@ language-specific, you must specify the requested language using the
  * `dependency('hdf5', language: 'cpp')` for the C++ HDF5 headers and libraries
  * `dependency('hdf5', language: 'fortran')` for the Fortran HDF5 headers and libraries
 
-Meson uses pkg-config to find HDF5. The standard low-level HDF5
-function and the `HL` high-level HDF5 functions are linked for each
-language.
+The standard low-level HDF5 function and the `HL` high-level HDF5
+functions are linked for each language.
 
 `method` may be `auto`, `config-tool` or `pkg-config`.
 
@@ -653,6 +652,14 @@ The `language` keyword may used.
 
 `method` may be `auto`, `pkg-config`, `system` or `cmake`.
 
+## NumPy
+
+*(added 1.4.0)*
+
+`method` may be `auto`, `pkg-config`, or `config-tool`.
+`dependency('numpy')` supports regular use of the NumPy C API.
+Use of `numpy.f2py` for binding Fortran code isn't yet supported.
+
 ## pcap
 
 *(added 0.42.0)*
@@ -679,7 +686,7 @@ but dependency tries `pkg-config` first.
 
 `method` may be `auto`, `extraframework`, `pkg-config` or `sysconfig`
 
-## Qt4 & Qt5
+## Qt
 
 Meson has native Qt support. Its usage is best demonstrated with an
 example.

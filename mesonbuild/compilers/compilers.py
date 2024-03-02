@@ -48,7 +48,7 @@ lib_suffixes = {'a', 'lib', 'dll', 'dll.a', 'dylib', 'so', 'js'}
 # First suffix is the language's default.
 lang_suffixes = {
     'c': ('c',),
-    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx', 'C'),
+    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx', 'C', 'H'),
     'cuda': ('cu',),
     # f90, f95, f03, f08 are for free-form fortran ('f90' recommended)
     # f, for, ftn, fpp are for fixed-form fortran ('f' or 'for' recommended)
@@ -324,6 +324,9 @@ def get_base_link_args(options: 'KeyedOptionDictType', linker: 'Compiler',
     args: T.List[str] = []
     try:
         if options[OptionKey('b_lto')].value:
+            if options[OptionKey('werror')].value:
+                args.extend(linker.get_werror_args())
+
             thinlto_cache_dir = None
             if get_option_value(options, OptionKey('b_thinlto_cache'), False):
                 thinlto_cache_dir = get_option_value(options, OptionKey('b_thinlto_cache_dir'), '')
@@ -747,7 +750,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def compile(self, code: 'mesonlib.FileOrString',
                 extra_args: T.Union[None, CompilerArgs, T.List[str]] = None,
                 *, mode: CompileCheckMode = CompileCheckMode.LINK, want_output: bool = False,
-                temp_dir: T.Optional[str] = None) -> T.Iterator[T.Optional[CompileResult]]:
+                temp_dir: T.Optional[str] = None) -> T.Iterator[CompileResult]:
         # TODO: there isn't really any reason for this to be a contextmanager
 
         if mode == CompileCheckMode.PREPROCESS:
@@ -809,7 +812,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def cached_compile(self, code: 'mesonlib.FileOrString', cdata: coredata.CoreData, *,
                        extra_args: T.Union[None, T.List[str], CompilerArgs] = None,
                        mode: CompileCheckMode = CompileCheckMode.LINK,
-                       temp_dir: T.Optional[str] = None) -> T.Iterator[T.Optional[CompileResult]]:
+                       temp_dir: T.Optional[str] = None) -> T.Iterator[CompileResult]:
         # TODO: There's isn't really any reason for this to be a context manager
 
         # Calculate the key
@@ -1235,7 +1238,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
                        extra_args: T.Union[None, CompilerArgs, T.List[str], T.Callable[[CompileCheckMode], T.List[str]]] = None,
                        dependencies: T.Optional[T.List['Dependency']] = None,
                        mode: CompileCheckMode = CompileCheckMode.COMPILE, want_output: bool = False,
-                       disable_cache: bool = False) -> T.Iterator[T.Optional[CompileResult]]:
+                       disable_cache: bool = False) -> T.Iterator[CompileResult]:
         """Helper for getting a cached value when possible.
 
         This method isn't meant to be called externally, it's mean to be

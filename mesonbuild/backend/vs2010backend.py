@@ -480,7 +480,7 @@ class Vs2010Backend(backends.Backend):
                                 (self.environment.coredata.regen_guid, buildtype,
                                     self.platform, buildtype, self.platform))
             # Create the solution configuration
-            for p in projlist:
+            for project_index, p in enumerate(projlist):
                 if p[3] is MachineChoice.BUILD:
                     config_platform = self.build_platform
                 else:
@@ -493,11 +493,11 @@ class Vs2010Backend(backends.Backend):
                     # If we're building the solution with Visual Studio's build system, enable building of buildable
                     # projects.  However, if we're building with meson (via --genvslite), then, since each project's
                     # 'build' action just ends up doing the same 'meson compile ...' we don't want the 'solution build'
-                    # repeatedly going off and doing the same 'meson compile ...' multiple times over, so we just
-                    # leave it up to the user to select or build just one project.
-                    # FIXME:  Would be slightly nicer if we could enable building of just one top level target/project,
-                    # but not sure how to identify that.
-                    if not self.gen_lite and \
+                    # repeatedly going off and doing the same 'meson compile ...' multiple times over, so we default
+                    # to building the startup project, which is the first listed project in the solution file by
+                    # default for Visual Studio. The user is free to change this afterwards, but this provides a
+                    # sensible default.
+                    if (not self.gen_lite or project_index == 0) and \
                        p[0] in default_projlist and \
                        not isinstance(self.build.targets[p[0]], build.RunTarget):
                         ofile.write('\t\t{%s}.%s|%s.Build.0 = %s|%s\n' %
@@ -650,6 +650,10 @@ class Vs2010Backend(backends.Backend):
         # This is extremely unhelpful and misleading since the v14x build tools ARE installed.
         ET.SubElement(root, 'Import', Project=r'$(VCTargetsPath)\Microsoft.Cpp.props')
 
+        # This attribute makes sure project names are displayed as expected in solution files even when their project file names differ
+        pname = ET.SubElement(globalgroup, 'ProjectName')
+        pname.text = target_name
+
         if not self.gen_lite: # Plenty of elements aren't necessary for 'makefile'-style project that just redirects to meson builds
             # XXX Wasn't here before for anything but gen_vcxproj , but seems fine?
             ns = ET.SubElement(globalgroup, 'RootNamespace')
@@ -657,8 +661,6 @@ class Vs2010Backend(backends.Backend):
 
             p = ET.SubElement(globalgroup, 'Platform')
             p.text = target_platform
-            pname = ET.SubElement(globalgroup, 'ProjectName')
-            pname.text = target_name
             if self.windows_target_platform_version:
                 ET.SubElement(globalgroup, 'WindowsTargetPlatformVersion').text = self.windows_target_platform_version
             ET.SubElement(globalgroup, 'UseMultiToolTask').text = 'true'
@@ -1118,7 +1120,7 @@ class Vs2010Backend(backends.Backend):
     # and include paths, e.g. -
     #    '..\\some\\dir\\include;../../some/other/dir;'
     # and finally any remaining compiler options, e.g. -
-    #    '/MDd;/W2;/std:c++17;/Od/Zi'
+    #    '/MDd /W2 /std:c++17 /Od/Zi'
     @staticmethod
     def _extract_nmake_fields(captured_build_args: list[str]) -> T.Tuple[str, str, str]:
         include_dir_options = [
@@ -1131,7 +1133,7 @@ class Vs2010Backend(backends.Backend):
         ]
 
         defs = ''
-        paths = ''
+        paths = '$(VC_IncludePath);$(WindowsSDK_IncludePath);'
         additional_opts = ''
         for arg in captured_build_args:
             if arg.startswith(('-D', '/D')):
@@ -1141,7 +1143,7 @@ class Vs2010Backend(backends.Backend):
                 if opt_match:
                     paths += arg[len(opt_match):] + ';'
                 elif arg.startswith(('-', '/')):
-                    additional_opts += arg + ';'
+                    additional_opts += arg + ' '
         return (defs, paths, additional_opts)
 
     @staticmethod
@@ -1345,7 +1347,8 @@ class Vs2010Backend(backends.Backend):
         ET.SubElement(clconf, 'FunctionLevelLinking').text = 'true'
         # Warning level
         warning_level = T.cast('str', target.get_option(OptionKey('warning_level')))
-        ET.SubElement(clconf, 'WarningLevel').text = 'Level' + str(1 + int(warning_level))
+        warning_level = 'EnableAllWarnings' if warning_level == 'everything' else 'Level' + str(1 + int(warning_level))
+        ET.SubElement(clconf, 'WarningLevel').text = warning_level
         if target.get_option(OptionKey('werror')):
             ET.SubElement(clconf, 'TreatWarningAsError').text = 'true'
         # Optimization flags
@@ -1365,7 +1368,7 @@ class Vs2010Backend(backends.Backend):
         elif '/Ob2' in o_flags:
             ET.SubElement(clconf, 'InlineFunctionExpansion').text = 'AnySuitable'
         # Size-preserving flags
-        if '/Os' in o_flags:
+        if '/Os' in o_flags or '/O1' in o_flags:
             ET.SubElement(clconf, 'FavorSizeOrSpeed').text = 'Size'
         # Note: setting FavorSizeOrSpeed with clang-cl conflicts with /Od and can make debugging difficult, so don't.
         elif '/Od' not in o_flags:
@@ -1445,12 +1448,10 @@ class Vs2010Backend(backends.Backend):
                                 extra_link_args.append(path[:-len(gen_src_ext)] + '.obj')
 
                     for src in l.srclist:
-                        obj_basename = None
                         if self.environment.is_source(src):
-                            obj_basename = self.object_filename_from_source(t, src)
                             target_private_dir = self.relpath(self.get_target_private_dir(t),
                                                               self.get_target_dir(t))
-                            rel_obj = os.path.join(target_private_dir, obj_basename)
+                            rel_obj = self.object_filename_from_source(t, src, target_private_dir)
                             extra_link_args.append(rel_obj)
 
                     extra_link_args.extend(self.flatten_object_list(t))

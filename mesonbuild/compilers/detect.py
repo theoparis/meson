@@ -106,7 +106,7 @@ def detect_compiler_for(env: 'Environment', lang: str, for_machine: MachineChoic
     if comp is None:
         return comp
     assert comp.for_machine == for_machine
-    env.coredata.process_new_compiler(lang, comp, env)
+    env.coredata.process_compiler_options(lang, comp, env)
     if not skip_sanity_check:
         comp.sanity_check(env.get_scratch_dir(), env)
     env.coredata.compilers[comp.for_machine][lang] = comp
@@ -171,7 +171,11 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
             trials = [defaults['gcc_static_linker']] + default_linkers
         elif compiler.id == 'clang':
             # Use llvm-ar if available; needed for LTO
-            trials = [defaults['clang_static_linker']] + default_linkers
+            llvm_ar = defaults['clang_static_linker']
+            # Extract the version major of the compiler to use as a suffix
+            suffix = compiler.version.split('.')[0]
+            # Prefer suffixed llvm-ar first, then unsuffixed then the defaults
+            trials = [[f'{llvm_ar[0]}-{suffix}'], llvm_ar] + default_linkers
         elif compiler.language == 'd':
             # Prefer static linkers over linkers used by D compilers
             if is_windows():
@@ -197,7 +201,7 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
         else:
             arg = '--version'
         try:
-            p, out, err = Popen_safe_logged(linker + [arg], msg='Detecting linker via')
+            p, out, err = Popen_safe_logged(linker + [arg], msg='Detecting archiver via')
         except OSError as e:
             popen_exceptions[join_args(linker + [arg])] = e
             continue
@@ -769,6 +773,7 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
 
             if 'flang' in out or 'clang' in out:
                 cls = fortran.FlangFortranCompiler
+                linker = None
                 if 'windows' in out or env.machines[for_machine].is_windows():
                     # If we're in a MINGW context this actually will use a gnu
                     # style ld, but for flang on "real" windows we'll use

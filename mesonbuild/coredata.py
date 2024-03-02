@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2013-2023 The Meson development team
+# Copyright 2013-2024 The Meson development team
+# Copyright © 2023 Intel Corporation
 
 from __future__ import annotations
 
@@ -31,12 +32,29 @@ import shlex
 import typing as T
 
 if T.TYPE_CHECKING:
+    from typing_extensions import Protocol
+
     from . import dependencies
     from .compilers.compilers import Compiler, CompileResult, RunResult, CompileCheckMode
     from .dependencies.detect import TV_DepID
     from .environment import Environment
     from .mesonlib import FileOrString
     from .cmake.traceparser import CMakeCacheEntry
+
+    class SharedCMDOptions(Protocol):
+
+        """Representation of command line options from Meson setup, configure,
+        and dist.
+
+        :param projectoptions: The raw list of command line options given
+        :param cmd_line_options: command line options parsed into an OptionKey:
+            str mapping
+        """
+
+        cmd_line_options: T.Dict[OptionKey, str]
+        projectoptions: T.List[str]
+        cross_file: T.List[str]
+        native_file: T.List[str]
 
     OptionDictType = T.Union[T.Dict[str, 'UserOption[T.Any]'], 'OptionsView']
     MutableKeyedOptionDictType = T.Dict['OptionKey', 'UserOption[T.Any]']
@@ -52,7 +70,7 @@ if T.TYPE_CHECKING:
 #
 # Pip requires that RCs are named like this: '0.1.0.rc1'
 # But the corresponding Git tag needs to be '0.1.0rc1'
-version = '1.3.99'
+version = '1.4.0.rc1'
 
 # The next stable version when we are in dev. This is used to allow projects to
 # require meson version >=1.2.0 when using 1.1.99. FeatureNew won't warn when
@@ -546,7 +564,7 @@ _V = T.TypeVar('_V')
 
 class CoreData:
 
-    def __init__(self, options: argparse.Namespace, scratch_dir: str, meson_command: T.List[str]):
+    def __init__(self, options: SharedCMDOptions, scratch_dir: str, meson_command: T.List[str]):
         self.lang_guids = {
             'default': '8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942',
             'c': '8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942',
@@ -587,7 +605,7 @@ class CoreData:
         self.init_builtins('')
 
     @staticmethod
-    def __load_config_files(options: argparse.Namespace, scratch_dir: str, ftype: str) -> T.List[str]:
+    def __load_config_files(options: SharedCMDOptions, scratch_dir: str, ftype: str) -> T.List[str]:
         # Need to try and make the passed filenames absolute because when the
         # files are parsed later we'll have chdir()d.
         if ftype == 'cross':
@@ -956,6 +974,8 @@ class CoreData:
         return dirty
 
     def set_default_options(self, default_options: T.MutableMapping[OptionKey, str], subproject: str, env: 'Environment') -> None:
+        from .compilers import base_options
+
         # Main project can set default options on subprojects, but subprojects
         # can only set default options on themselves.
         # Preserve order: if env.options has 'buildtype' it must come after
@@ -987,7 +1007,10 @@ class CoreData:
                 continue
             # Skip base, compiler, and backend options, they are handled when
             # adding languages and setting backend.
-            if k.type in {OptionType.COMPILER, OptionType.BACKEND, OptionType.BASE}:
+            if k.type in {OptionType.COMPILER, OptionType.BACKEND}:
+                continue
+            if k.type == OptionType.BASE and k in base_options:
+                # set_options will report unknown base options
                 continue
             options[k] = v
 
@@ -999,6 +1022,7 @@ class CoreData:
             value = env.options.get(k)
             if value is not None:
                 o.set_value(value)
+                self.options[k] = o  # override compiler option on reconfigure
             self.options.setdefault(k, o)
 
     def add_lang_args(self, lang: str, comp: T.Type['Compiler'],
@@ -1010,20 +1034,20 @@ class CoreData:
         # `self.options.update()`` is perfectly safe.
         self.options.update(compilers.get_global_options(lang, comp, for_machine, env))
 
-    def process_new_compiler(self, lang: str, comp: 'Compiler', env: 'Environment') -> None:
+    def process_compiler_options(self, lang: str, comp: 'Compiler', env: 'Environment') -> None:
         from . import compilers
 
         self.add_compiler_options(comp.get_options(), lang, comp.for_machine, env)
 
         enabled_opts: T.List[OptionKey] = []
         for key in comp.base_options:
-            if key in self.options:
-                continue
-            oobj = copy.deepcopy(compilers.base_options[key])
-            if key in env.options:
-                oobj.set_value(env.options[key])
-                enabled_opts.append(key)
-            self.options[key] = oobj
+            if key not in self.options:
+                self.options[key] = copy.deepcopy(compilers.base_options[key])
+                if key in env.options:
+                    self.options[key].set_value(env.options[key])
+                    enabled_opts.append(key)
+            elif key in env.options:
+                self.options[key].set_value(env.options[key])
         self.emit_base_options_warnings(enabled_opts)
 
     def emit_base_options_warnings(self, enabled_opts: T.List[OptionKey]) -> None:
@@ -1097,6 +1121,8 @@ class MachineFileParser():
             return node.value
         elif isinstance(node, mparser.NumberNode):
             return node.value
+        elif isinstance(node, mparser.ParenthesizedNode):
+            return self._evaluate_statement(node.inner)
         elif isinstance(node, mparser.ArrayNode):
             # TODO: This is where recursive types would come in handy
             return [self._evaluate_statement(arg) for arg in node.args.arguments]
@@ -1121,7 +1147,7 @@ def parse_machine_files(filenames: T.List[str], sourcedir: str):
 def get_cmd_line_file(build_dir: str) -> str:
     return os.path.join(build_dir, 'meson-private', 'cmd_line.txt')
 
-def read_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
+def read_cmd_line_file(build_dir: str, options: SharedCMDOptions) -> None:
     filename = get_cmd_line_file(build_dir)
     if not os.path.isfile(filename):
         return
@@ -1143,7 +1169,7 @@ def read_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
         # literal_eval to get it into the list of strings.
         options.native_file = ast.literal_eval(properties.get('native_file', '[]'))
 
-def write_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
+def write_cmd_line_file(build_dir: str, options: SharedCMDOptions) -> None:
     filename = get_cmd_line_file(build_dir)
     config = CmdLineFileParser()
 
@@ -1158,7 +1184,7 @@ def write_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
     with open(filename, 'w', encoding='utf-8') as f:
         config.write(f)
 
-def update_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
+def update_cmd_line_file(build_dir: str, options: SharedCMDOptions) -> None:
     filename = get_cmd_line_file(build_dir)
     config = CmdLineFileParser()
     config.read(filename)
@@ -1166,7 +1192,7 @@ def update_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
     with open(filename, 'w', encoding='utf-8') as f:
         config.write(f)
 
-def format_cmd_line_options(options: argparse.Namespace) -> str:
+def format_cmd_line_options(options: SharedCMDOptions) -> str:
     cmdline = ['-D{}={}'.format(str(k), v) for k, v in options.cmd_line_options.items()]
     if options.cross_file:
         cmdline += [f'--cross-file={f}' for f in options.cross_file]
@@ -1224,7 +1250,7 @@ def create_options_dict(options: T.List[str], subproject: str = '') -> T.Dict[Op
         result[k] = value
     return result
 
-def parse_cmd_line_options(args: argparse.Namespace) -> None:
+def parse_cmd_line_options(args: SharedCMDOptions) -> None:
     args.cmd_line_options = create_options_dict(args.projectoptions)
 
     # Merge builtin options set with --option into the dict.
