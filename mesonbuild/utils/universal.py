@@ -7,6 +7,7 @@
 from __future__ import annotations
 from pathlib import Path
 import argparse
+import ast
 import enum
 import sys
 import stat
@@ -129,6 +130,7 @@ __all__ = [
     'iter_regexin_iter',
     'join_args',
     'listify',
+    'listify_array_value',
     'partition',
     'path_is_in_root',
     'pickle_load',
@@ -166,8 +168,11 @@ project_meson_versions: T.DefaultDict[str, str] = collections.defaultdict(str)
 
 from glob import glob
 
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # using a PyInstaller bundle, e.g. the MSI installed executable
+if getattr(sys, 'frozen', False):
+    # Using e.g. a PyInstaller bundle, such as the MSI installed executable.
+    # It is conventional for freeze programs to set this attribute to indicate
+    # that the program is self hosted, and for example there is no associated
+    # "python" executable.
     python_command = [sys.executable, 'runpython']
 else:
     python_command = [sys.executable]
@@ -1435,6 +1440,26 @@ def listify(item: T.Any, flatten: bool = True) -> T.List[T.Any]:
             result.append(i)
     return result
 
+def listify_array_value(value: T.Union[str, T.List[str]], shlex_split_args: bool = False) -> T.List[str]:
+    if isinstance(value, str):
+        if value.startswith('['):
+            try:
+                newvalue = ast.literal_eval(value)
+            except ValueError:
+                raise MesonException(f'malformed value {value}')
+        elif value == '':
+            newvalue = []
+        else:
+            if shlex_split_args:
+                newvalue = split_args(value)
+            else:
+                newvalue = [v.strip() for v in value.split(',')]
+    elif isinstance(value, list):
+        newvalue = value
+    else:
+        raise MesonException(f'"{value}" should be a string array, but it is not')
+    assert isinstance(newvalue, list)
+    return newvalue
 
 def extract_as_list(dict_object: T.Dict[_T, _U], key: _T, pop: bool = False) -> T.List[_U]:
     '''
@@ -1565,7 +1590,7 @@ def Popen_safe_logged(args: T.List[str], msg: str = 'Called', **kwargs: T.Any) -
         mlog.debug(f'{msg}: `{join_args(args)}` -> {excp}')
         raise
 
-    rc, out, err = p.returncode, o.strip(), e.strip()
+    rc, out, err = p.returncode, o.strip() if o else None, e.strip() if e else None
     mlog.debug('-----------')
     mlog.debug(f'{msg}: `{join_args(args)}` -> {rc}')
     if out:
@@ -1719,6 +1744,8 @@ def get_filenames_templates_dict(inputs: T.List[str], outputs: T.List[str]) -> T
     If there is more than one input file, the following keys are also created:
 
     @INPUT0@, @INPUT1@, ... one for each input file
+    @PLAINNAME0@, @PLAINNAME1@, ... one for each input file
+    @BASENAME0@, @BASENAME1@, ... one for each input file
 
     If there is more than one output file, the following keys are also created:
 
@@ -1732,6 +1759,9 @@ def get_filenames_templates_dict(inputs: T.List[str], outputs: T.List[str]) -> T
         for (ii, vv) in enumerate(inputs):
             # Write out @INPUT0@, @INPUT1@, ...
             values[f'@INPUT{ii}@'] = vv
+            plain = os.path.basename(vv)
+            values[f'@PLAINNAME{ii}@'] = plain
+            values[f'@BASENAME{ii}@'] = os.path.splitext(plain)[0]
         if len(inputs) == 1:
             # Just one value, substitute @PLAINNAME@ and @BASENAME@
             values['@PLAINNAME@'] = plain = os.path.basename(inputs[0])
@@ -1908,14 +1938,14 @@ class OrderedSet(T.MutableSet[_T]):
         for item in iterable:
             self.discard(item)
 
-def relpath(path: str, start: str) -> str:
+def relpath(path: T.Union[str, Path], start: T.Union[str, Path]) -> str:
     # On Windows a relative path can't be evaluated for paths on two different
     # drives (i.e. c:\foo and f:\bar).  The only thing left to do is to use the
     # original absolute path.
     try:
         return os.path.relpath(path, start)
     except (TypeError, ValueError):
-        return path
+        return str(path)
 
 def path_is_in_root(path: Path, root: Path, resolve: bool = False) -> bool:
     # Check whether a path is within the root directory root

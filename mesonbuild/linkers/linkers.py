@@ -492,6 +492,9 @@ class C2000Linker(TILinker):
     # Required for backwards compat with projects created before ti-cgt support existed
     id = 'ar2000'
 
+class C6000Linker(TILinker):
+    id = 'ar6000'
+
 
 class AIXArLinker(ArLikeLinker, StaticLinker):
     id = 'aixar'
@@ -1101,6 +1104,9 @@ class C2000DynamicLinker(TIDynamicLinker):
     # Required for backwards compat with projects created before ti-cgt support existed
     id = 'cl2000'
 
+class C6000DynamicLinker(TIDynamicLinker):
+    id = 'cl6000'
+
 
 class ArmDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
 
@@ -1320,6 +1326,9 @@ class MSVCDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
     def get_win_subsystem_args(self, value: str) -> T.List[str]:
         return self._apply_prefix([f'/SUBSYSTEM:{value.upper()}'])
 
+    def fatal_warnings(self) -> T.List[str]:
+        return ['-WX']
+
 
 class ClangClDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
 
@@ -1348,6 +1357,9 @@ class ClangClDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
 
     def get_thinlto_cache_args(self, path: str) -> T.List[str]:
         return ["/lldltocache:" + path]
+
+    def fatal_warnings(self) -> T.List[str]:
+        return ['-WX']
 
 
 class XilinkDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from .. import mparser
 from .. import environment
 from .. import coredata
@@ -527,7 +529,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             assert isinstance(kw, mparser.IdNode), 'for mypy'
             if kw.value == 'meson_version':
                 # mypy does not understand "and isinstance"
-                if isinstance(val, mparser.BaseStringNode):
+                if isinstance(val, mparser.StringNode):
                     self.handle_meson_version(val.value, val)
 
     def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
@@ -605,6 +607,10 @@ class Interpreter(InterpreterBase, HoldableObject):
         disabled, required, _ = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
             return NotFoundExtensionModule(modname)
+
+        # Always report implementation detail modules don't exist
+        if modname.startswith('_'):
+            raise InvalidArguments(f'Module "{modname}" does not exist')
 
         expect_unstable = False
         # Some tests use "unstable_" instead of "unstable-", and that happens to work because
@@ -1035,7 +1041,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         FeatureNew.single_use('Cargo subproject', '1.3.0', self.subproject, location=self.current_node)
         with mlog.nested(subp_name):
             ast, options = cargo.interpret(subp_name, subdir, self.environment)
-            self.coredata.update_project_options(options)
+            self.coredata.update_project_options(options, subp_name)
             return self._do_subproject_meson(
                 subp_name, subdir, default_options, kwargs, ast,
                 # FIXME: Are there other files used by cargo interpreter?
@@ -1187,10 +1193,16 @@ class Interpreter(InterpreterBase, HoldableObject):
         else:
             option_file = old_option_file
         if os.path.exists(option_file):
+            with open(option_file, 'rb') as f:
+                # We want fast  not cryptographically secure, this is just to
+                # see if the option file has changed
+                self.coredata.options_files[self.subproject] = (option_file, hashlib.sha1(f.read()).hexdigest())
             oi = optinterpreter.OptionInterpreter(self.subproject)
             oi.process(option_file)
-            self.coredata.update_project_options(oi.options)
+            self.coredata.update_project_options(oi.options, self.subproject)
             self.add_build_def_file(option_file)
+        else:
+            self.coredata.options_files[self.subproject] = None
 
         if self.subproject:
             self.project_default_options = {k.evolve(subproject=self.subproject): v
@@ -1506,7 +1518,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     skip_sanity_check = self.should_skip_sanity_check(for_machine)
                     if skip_sanity_check:
                         mlog.log('Cross compiler sanity tests disabled via the cross file.', once=True)
-                    comp = compilers.detect_compiler_for(self.environment, lang, for_machine, skip_sanity_check)
+                    comp = compilers.detect_compiler_for(self.environment, lang, for_machine, skip_sanity_check, self.subproject)
                     if comp is None:
                         raise InvalidArguments(f'Tried to use unknown language "{lang}".')
                 except mesonlib.MesonException:
@@ -1520,7 +1532,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                         raise
             else:
                 # update new values from commandline, if it applies
-                self.coredata.process_compiler_options(lang, comp, self.environment)
+                self.coredata.process_compiler_options(lang, comp, self.environment, self.subproject)
 
             # Add per-subproject compiler options. They inherit value from main project.
             if self.subproject:
@@ -1529,7 +1541,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     v = copy.copy(self.coredata.options[k])
                     k = k.evolve(subproject=self.subproject)
                     options[k] = v
-                self.coredata.add_compiler_options(options, lang, for_machine, self.environment)
+                self.coredata.add_compiler_options(options, lang, for_machine, self.environment, self.subproject)
 
             if for_machine == MachineChoice.HOST or self.environment.is_cross_build():
                 logger_fun = mlog.log
@@ -1971,17 +1983,23 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_subdir_done(self, node: mparser.BaseNode, args: TYPE_var, kwargs: TYPE_kwargs) -> T.NoReturn:
         raise SubdirDoneRequest()
 
-    @staticmethod
-    def _validate_custom_target_outputs(has_multi_in: bool, outputs: T.Iterable[str], name: str) -> None:
+    def _validate_custom_target_outputs(self, has_multi_in: bool, outputs: T.Iterable[str], name: str) -> None:
         """Checks for additional invalid values in a custom_target output.
 
         This cannot be done with typed_kwargs because it requires the number of
         inputs.
         """
+        inregex: T.List[str] = ['@PLAINNAME[0-9]+@', '@BASENAME[0-9]+@']
+        from ..utils.universal import iter_regexin_iter
         for out in outputs:
+            match = iter_regexin_iter(inregex, [out])
             if has_multi_in and ('@PLAINNAME@' in out or '@BASENAME@' in out):
                 raise InvalidArguments(f'{name}: output cannot contain "@PLAINNAME@" or "@BASENAME@" '
                                        'when there is more than one input (we can\'t know which to use)')
+            elif match:
+                FeatureNew.single_use(
+                    f'{match} in output', '1.5.0',
+                    self.subproject)
 
     @typed_pos_args('custom_target', optargs=[str])
     @typed_kwargs(
@@ -2413,9 +2431,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         if not os.path.isfile(absname):
             self.subdir = prev_subdir
             raise InterpreterException(f"Nonexistent build file '{buildfilename!s}'")
-        with open(absname, encoding='utf-8') as f:
-            code = f.read()
-        assert isinstance(code, str)
+        code = self.read_buildfile(absname, buildfilename)
         try:
             codeblock = mparser.Parser(code, absname).parse()
         except mesonlib.MesonException as me:
@@ -2432,7 +2448,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     # It was likely added "because it exists", but should never be used. In
     # theory it is useful for directories, but we never apply modes to
     # directories other than in install_emptydir.
-    def _warn_kwarg_install_mode_sticky(self, mode: FileMode) -> None:
+    def _warn_kwarg_install_mode_sticky(self, mode: FileMode) -> FileMode:
         if mode.perms > 0 and mode.perms & stat.S_ISVTX:
             mlog.deprecation('install_mode with the sticky bit on a file does not do anything and will '
                              'be ignored since Meson 0.64.0', location=self.current_node)

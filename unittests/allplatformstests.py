@@ -944,7 +944,7 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join("test cases/cython", '2 generated sources')
         env = get_fake_env(testdir, self.builddir, self.prefix)
         try:
-            detect_compiler_for(env, "cython", MachineChoice.HOST, True)
+            detect_compiler_for(env, "cython", MachineChoice.HOST, True, '')
         except EnvironmentException:
             raise SkipTest("Cython is not installed")
         self.init(testdir)
@@ -969,7 +969,7 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join("test cases/cython", '2 generated sources')
         env = get_fake_env(testdir, self.builddir, self.prefix)
         try:
-            cython = detect_compiler_for(env, "cython", MachineChoice.HOST, True)
+            cython = detect_compiler_for(env, "cython", MachineChoice.HOST, True, '')
             if not version_compare(cython.version, '>=0.29.33'):
                 raise SkipTest('Cython is too old')
         except EnvironmentException:
@@ -1494,7 +1494,8 @@ class AllPlatformTests(BasePlatformTests):
                     subproject('tarballsub', required : false)
                     subproject('samerepo', required : false)
                     '''))
-            with open(os.path.join(project_dir, 'distexe.c'), 'w', encoding='utf-8') as ofile:
+            distexe_c = os.path.join(project_dir, 'distexe.c')
+            with open(distexe_c, 'w', encoding='utf-8') as ofile:
                 ofile.write(textwrap.dedent('''\
                     #include<stdio.h>
 
@@ -1505,6 +1506,8 @@ class AllPlatformTests(BasePlatformTests):
                     '''))
             xz_distfile = os.path.join(self.distdir, 'disttest-1.4.3.tar.xz')
             xz_checksumfile = xz_distfile + '.sha256sum'
+            bz_distfile = os.path.join(self.distdir, 'disttest-1.4.3.tar.bz2')
+            bz_checksumfile = bz_distfile + '.sha256sum'
             gz_distfile = os.path.join(self.distdir, 'disttest-1.4.3.tar.gz')
             gz_checksumfile = gz_distfile + '.sha256sum'
             zip_distfile = os.path.join(self.distdir, 'disttest-1.4.3.zip')
@@ -1520,10 +1523,18 @@ class AllPlatformTests(BasePlatformTests):
             self.build('dist')
             self.assertPathExists(xz_distfile)
             self.assertPathExists(xz_checksumfile)
+            self.assertPathDoesNotExist(bz_distfile)
+            self.assertPathDoesNotExist(bz_checksumfile)
             self.assertPathDoesNotExist(gz_distfile)
             self.assertPathDoesNotExist(gz_checksumfile)
             self.assertPathDoesNotExist(zip_distfile)
             self.assertPathDoesNotExist(zip_checksumfile)
+            # update a source file timestamp; dist should succeed anyway
+            os.utime(distexe_c)
+            self._run(self.meson_command + ['dist', '--formats', 'bztar'],
+                      workdir=self.builddir)
+            self.assertPathExists(bz_distfile)
+            self.assertPathExists(bz_checksumfile)
             self._run(self.meson_command + ['dist', '--formats', 'gztar'],
                       workdir=self.builddir)
             self.assertPathExists(gz_distfile)
@@ -1534,14 +1545,18 @@ class AllPlatformTests(BasePlatformTests):
             self.assertPathExists(zip_checksumfile)
             os.remove(xz_distfile)
             os.remove(xz_checksumfile)
+            os.remove(bz_distfile)
+            os.remove(bz_checksumfile)
             os.remove(gz_distfile)
             os.remove(gz_checksumfile)
             os.remove(zip_distfile)
             os.remove(zip_checksumfile)
-            self._run(self.meson_command + ['dist', '--formats', 'xztar,gztar,zip'],
+            self._run(self.meson_command + ['dist', '--formats', 'xztar,bztar,gztar,zip'],
                       workdir=self.builddir)
             self.assertPathExists(xz_distfile)
             self.assertPathExists(xz_checksumfile)
+            self.assertPathExists(bz_distfile)
+            self.assertPathExists(bz_checksumfile)
             self.assertPathExists(gz_distfile)
             self.assertPathExists(gz_checksumfile)
             self.assertPathExists(zip_distfile)
@@ -2355,7 +2370,7 @@ class AllPlatformTests(BasePlatformTests):
         env = get_fake_env()
         for l in ['cpp', 'cs', 'd', 'java', 'cuda', 'fortran', 'objc', 'objcpp', 'rust', 'vala']:
             try:
-                comp = detect_compiler_for(env, l, MachineChoice.HOST, True)
+                comp = detect_compiler_for(env, l, MachineChoice.HOST, True, '')
                 with tempfile.TemporaryDirectory() as d:
                     comp.sanity_check(d, env)
                 langs.append(l)
@@ -2373,7 +2388,7 @@ class AllPlatformTests(BasePlatformTests):
                     if is_windows() and lang == 'fortran' and target_type == 'library':
                         # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
                         # see "test cases/fortran/6 dynamic"
-                        fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True)
+                        fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True, '')
                         if fc.get_id() in {'intel-cl', 'pgi'}:
                             continue
                     # test empty directory
@@ -3583,7 +3598,6 @@ class AllPlatformTests(BasePlatformTests):
             'IdNode': [('value', None, str)],
             'NumberNode': [('value', None, int)],
             'StringNode': [('value', None, str)],
-            'FormatStringNode': [('value', None, str)],
             'ContinueNode': [],
             'BreakNode': [],
             'ArgumentNode': [('positional', accept_node_list), ('kwargs', accept_kwargs)],
@@ -3946,6 +3960,7 @@ class AllPlatformTests(BasePlatformTests):
         cmndstr = cmndline.split('{')[1]
         self.assertIn('}', cmndstr)
         help_commands = set(cmndstr.split('}')[0].split(','))
+        help_commands.remove('fmt')  # Remove the alias
         self.assertTrue(len(help_commands) > 0, 'Must detect some command names.')
 
         self.assertEqual(md_commands | {'help'}, help_commands, f'Doc file: `{doc_path}`')
@@ -4433,18 +4448,18 @@ class AllPlatformTests(BasePlatformTests):
             env = get_fake_env()
 
             # Get the compiler so we know which compiler class to mock.
-            cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True)
+            cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True, '')
             cc_type = type(cc)
 
             # Test a compiler that acts as a linker
             with mock.patch.object(cc_type, 'INVOKES_LINKER', True):
-                cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True)
+                cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True, '')
                 link_args = env.coredata.get_external_link_args(cc.for_machine, cc.language)
                 self.assertEqual(sorted(link_args), sorted(['-DCFLAG', '-flto']))
 
             # And one that doesn't
             with mock.patch.object(cc_type, 'INVOKES_LINKER', False):
-                cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True)
+                cc =  detect_compiler_for(env, 'c', MachineChoice.HOST, True, '')
                 link_args = env.coredata.get_external_link_args(cc.for_machine, cc.language)
                 self.assertEqual(sorted(link_args), sorted(['-flto']))
 

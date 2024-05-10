@@ -425,6 +425,10 @@ class MSVCCompiler(VisualStudioLikeCompiler):
     def get_pch_base_name(self, header: str) -> str:
         return os.path.basename(header)
 
+    # MSVC requires linking to the generated object file when linking a build target
+    # that uses a precompiled header
+    def should_link_pch_object(self) -> bool:
+        return True
 
 class ClangClCompiler(VisualStudioLikeCompiler):
 
@@ -455,6 +459,18 @@ class ClangClCompiler(VisualStudioLikeCompiler):
         if path == '':
             path = '.'
         return ['/clang:-isystem' + path] if is_system else ['-I' + path]
+
+    @classmethod
+    def use_linker_args(cls, linker: str, version: str) -> T.List[str]:
+        # Clang additionally can use a linker specified as a path, unlike MSVC.
+        if linker == 'lld-link':
+            return ['-fuse-ld=lld-link']
+        return super().use_linker_args(linker, version)
+
+    def linker_to_compiler_args(self, args: T.List[str]) -> T.List[str]:
+        # clang-cl forwards arguments span-wise with the /LINK flag
+        # therefore -Wl will be received by lld-link or LINK and rejected
+        return super().use_linker_args(self.linker.id, '') + super().linker_to_compiler_args([flag[4:] if flag.startswith('-Wl,') else flag for flag in args])
 
     def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:
         if dep.get_include_type() == 'system':

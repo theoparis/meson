@@ -1818,13 +1818,9 @@ class Generator(HoldableObject):
             env=env if env is not None else EnvironmentVariables())
 
         for e in files:
-            if isinstance(e, CustomTarget):
-                output.depends.add(e)
-            if isinstance(e, CustomTargetIndex):
-                output.depends.add(e.target)
             if isinstance(e, (CustomTarget, CustomTargetIndex)):
                 output.depends.add(e)
-                fs = [File.from_built_file(state.subdir, f) for f in e.get_outputs()]
+                fs = [File.from_built_file(e.get_subdir(), f) for f in e.get_outputs()]
             elif isinstance(e, GeneratedList):
                 if preserve_path_from:
                     raise InvalidArguments("generator.process: 'preserve_path_from' is not allowed if one input is a 'generated_list'.")
@@ -1976,8 +1972,8 @@ class Executable(BuildTarget):
                 self.suffix = 'abs'
             elif ('c' in self.compilers and self.compilers['c'].get_id().startswith('xc16')):
                 self.suffix = 'elf'
-            elif ('c' in self.compilers and self.compilers['c'].get_id() in {'ti', 'c2000'} or
-                  'cpp' in self.compilers and self.compilers['cpp'].get_id() in {'ti', 'c2000'}):
+            elif ('c' in self.compilers and self.compilers['c'].get_id() in {'ti', 'c2000', 'c6000'} or
+                  'cpp' in self.compilers and self.compilers['cpp'].get_id() in {'ti', 'c2000', 'c6000'}):
                 self.suffix = 'out'
             elif ('c' in self.compilers and self.compilers['c'].get_id() in {'mwccarm', 'mwcceppc'} or
                   'cpp' in self.compilers and self.compilers['cpp'].get_id() in {'mwccarm', 'mwcceppc'}):
@@ -2815,11 +2811,11 @@ class RunTarget(Target, CommandBase):
 
     def __init__(self, name: str,
                  command: T.Sequence[T.Union[str, File, BuildTargetTypes, programs.ExternalProgram]],
-                 dependencies: T.Sequence[Target],
+                 dependencies: T.Sequence[T.Union[Target, CustomTargetIndex]],
                  subdir: str,
                  subproject: str,
                  environment: environment.Environment,
-                 env: T.Optional['EnvironmentVariables'] = None,
+                 env: T.Optional[EnvironmentVariables] = None,
                  default_env: bool = True):
         # These don't produce output artifacts
         super().__init__(name, subdir, subproject, False, MachineChoice.BUILD, environment)
@@ -2834,10 +2830,10 @@ class RunTarget(Target, CommandBase):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
-    def get_dependencies(self) -> T.List[T.Union[BuildTarget, 'CustomTarget']]:
+    def get_dependencies(self) -> T.List[T.Union[BuildTarget, CustomTarget, CustomTargetIndex]]:
         return self.dependencies
 
-    def get_generated_sources(self) -> T.List['GeneratedTypes']:
+    def get_generated_sources(self) -> T.List[GeneratedTypes]:
         return []
 
     def get_sources(self) -> T.List[File]:

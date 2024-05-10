@@ -25,7 +25,6 @@ if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
     from ..linkers.linkers import DynamicLinker
     from ..mesonlib import MachineChoice
-    from ..programs import ExternalProgram
 
 
 cuda_optimization_args: T.Dict[str, T.List[str]] = {
@@ -184,12 +183,11 @@ class CudaCompiler(Compiler):
     id = 'nvcc'
 
     def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
-                 is_cross: bool, exe_wrapper: T.Optional['ExternalProgram'],
+                 is_cross: bool,
                  host_compiler: Compiler, info: 'MachineInfo',
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
         super().__init__(ccache, exelist, version, for_machine, info, linker=linker, full_version=full_version, is_cross=is_cross)
-        self.exe_wrapper = exe_wrapper
         self.host_compiler = host_compiler
         self.base_options = host_compiler.base_options
         # -Wpedantic generates useless churn due to nvcc's dual compilation model producing
@@ -199,6 +197,7 @@ class CudaCompiler(Compiler):
             level: self._to_host_flags(list(f for f in flags if f != '-Wpedantic'))
             for level, flags in host_compiler.warn_args.items()
         }
+        self.host_werror_args = ['-Xcompiler=' + x for x in self.host_compiler.get_werror_args()]
 
     @classmethod
     def _shield_nvcc_list_arg(cls, arg: str, listmode: bool = True) -> str:
@@ -383,8 +382,11 @@ class CudaCompiler(Compiler):
                 # This is ambiguously either an MVSC-style /switch or an absolute path
                 # to a file. For some magical reason the following works acceptably in
                 # both cases.
+                # We only want to prefix arguments that are NOT static archives, since
+                # the latter could contain relocatable device code (-dc/-rdc=true).
+                prefix = '' if flag.endswith('.a') else f'-X{phase.value}='
                 wrap = '"' if ',' in flag else ''
-                xflags.append(f'-X{phase.value}={wrap}{flag}{wrap}')
+                xflags.append(f'{prefix}{wrap}{flag}{wrap}')
                 continue
             elif len(flag) >= 2 and flag[0] == '-' and flag[1] in 'IDULlmOxmte':
                 # This is a single-letter short option. These options (with the
@@ -549,7 +551,7 @@ class CudaCompiler(Compiler):
         flags += self.get_ccbin_args(env.coredata.options)
 
         # If cross-compiling, we can't run the sanity check, only compile it.
-        if self.is_cross and self.exe_wrapper is None:
+        if env.need_exe_wrapper(self.for_machine) and not env.has_exe_wrapper():
             # Linking cross built apps is painful. You can't really
             # tell if you should use -nostdlib or not and for example
             # on OSX the compiler binary is the same but you need
@@ -571,11 +573,11 @@ class CudaCompiler(Compiler):
             raise EnvironmentException(f'Compiler {self.name_string()} cannot compile programs.')
 
         # Run sanity check (if possible)
-        if self.is_cross:
-            if self.exe_wrapper is None:
+        if env.need_exe_wrapper(self.for_machine):
+            if not env.has_exe_wrapper():
                 return
             else:
-                cmdlist = self.exe_wrapper.get_command() + [binary_name]
+                cmdlist = env.exe_wrapper.get_command() + [binary_name]
         else:
             cmdlist = self.exelist + ['--run', '"' + binary_name + '"']
         mlog.debug('Sanity check run command line: ', ' '.join(cmdlist))
@@ -631,10 +633,6 @@ class CudaCompiler(Compiler):
     _CPP20_VERSION = '>=12.0'
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
-        opts = super().get_options()
-        std_key = OptionKey('std', machine=self.for_machine, lang=self.language)
-        ccbindir_key = OptionKey('ccbindir', machine=self.for_machine, lang=self.language)
-
         cpp_stds = ['none', 'c++03', 'c++11']
         if version_compare(self.version, self._CPP14_VERSION):
             cpp_stds += ['c++14']
@@ -643,13 +641,18 @@ class CudaCompiler(Compiler):
         if version_compare(self.version, self._CPP20_VERSION):
             cpp_stds += ['c++20']
 
-        opts.update({
-            std_key:      coredata.UserComboOption('C++ language standard to use with CUDA',
-                                                   cpp_stds, 'none'),
-            ccbindir_key: coredata.UserStringOption('CUDA non-default toolchain directory to use (-ccbin)',
-                                                    ''),
-        })
-        return opts
+        return self.update_options(
+            super().get_options(),
+            self.create_option(coredata.UserComboOption,
+                               OptionKey('std', machine=self.for_machine, lang=self.language),
+                               'C++ language standard to use with CUDA',
+                               cpp_stds,
+                               'none'),
+            self.create_option(coredata.UserStringOption,
+                               OptionKey('ccbindir', machine=self.for_machine, lang=self.language),
+                               'CUDA non-default toolchain directory to use (-ccbin)',
+                               ''),
+        )
 
     def _to_host_compiler_options(self, options: 'KeyedOptionDictType') -> 'KeyedOptionDictType':
         """
@@ -708,7 +711,8 @@ class CudaCompiler(Compiler):
         return cuda_debug_args[is_debug]
 
     def get_werror_args(self) -> T.List[str]:
-        return ['-Werror=cross-execution-space-call,deprecated-declarations,reorder']
+        device_werror_args = ['-Werror=cross-execution-space-call,deprecated-declarations,reorder']
+        return device_werror_args + self.host_werror_args
 
     def get_warn_args(self, level: str) -> T.List[str]:
         return self.warn_args[level]
@@ -801,5 +805,5 @@ class CudaCompiler(Compiler):
     def get_profile_use_args(self) -> T.List[str]:
         return ['-Xcompiler=' + x for x in self.host_compiler.get_profile_use_args()]
 
-    def get_assert_args(self, disable: bool) -> T.List[str]:
-        return self.host_compiler.get_assert_args(disable)
+    def get_assert_args(self, disable: bool, env: 'Environment') -> T.List[str]:
+        return self.host_compiler.get_assert_args(disable, env)

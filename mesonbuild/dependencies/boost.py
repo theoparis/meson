@@ -594,7 +594,8 @@ class BoostDependency(SystemDependency):
         # mlog.debug('    - vscrt: {}'.format(vscrt))
         libs = [x for x in libs if x.static == self.static or not self.explicit_static]
         libs = [x for x in libs if x.mt == self.multithreading]
-        libs = [x for x in libs if x.version_matches(lib_vers)]
+        if not self.env.machines[self.for_machine].is_openbsd():
+            libs = [x for x in libs if x.version_matches(lib_vers)]
         libs = [x for x in libs if x.arch_matches(self.arch)]
         libs = [x for x in libs if x.vscrt_matches(vscrt)]
         libs = [x for x in libs if x.nvsuffix != 'dll']  # Only link to import libraries
@@ -664,8 +665,9 @@ class BoostDependency(SystemDependency):
         inc_paths = [x.resolve() for x in inc_paths]
         roots += inc_paths
 
+        m = self.env.machines[self.for_machine]
         # Add system paths
-        if self.env.machines[self.for_machine].is_windows():
+        if m.is_windows():
             # Where boost built from source actually installs it
             c_root = Path('C:/Boost')
             if c_root.is_dir():
@@ -687,8 +689,12 @@ class BoostDependency(SystemDependency):
             tmp: T.List[Path] = []
 
             # Add some default system paths
+            if m.is_darwin():
+                tmp.extend([
+                    Path('/opt/homebrew/'),        # for Apple Silicon MacOS
+                    Path('/usr/local/opt/boost'),  # for Intel Silicon MacOS
+                ])
             tmp += [Path('/opt/local')]
-            tmp += [Path('/usr/local/opt/boost')]
             tmp += [Path('/usr/local')]
             tmp += [Path('/usr')]
 

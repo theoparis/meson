@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2018 The Meson development team
+# Copyright © 2024 Intel Corporation
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool
@@ -15,7 +16,7 @@ from ..build import Executable, Jar, SharedLibrary, SharedModule, StaticLibrary
 from ..compilers import detect_compiler_for
 from ..interpreterbase import InvalidArguments, SubProject
 from ..mesonlib import MachineChoice, OptionKey
-from ..mparser import BaseNode, ArithmeticNode, ArrayNode, ElementaryNode, IdNode, FunctionNode, BaseStringNode
+from ..mparser import BaseNode, ArithmeticNode, ArrayNode, ElementaryNode, IdNode, FunctionNode, StringNode
 from .interpreter import AstInterpreter
 
 if T.TYPE_CHECKING:
@@ -106,7 +107,8 @@ class IntrospectionInterpreter(AstInterpreter):
         if os.path.exists(optfile):
             oi = optinterpreter.OptionInterpreter(self.subproject)
             oi.process(optfile)
-            self.coredata.update_project_options(oi.options)
+            assert isinstance(proj_name, str), 'for mypy'
+            self.coredata.update_project_options(oi.options, T.cast('SubProject', proj_name))
 
         def_opts = self.flatten_args(kwargs.get('default_options', []))
         _project_default_options = mesonlib.stringlistify(def_opts)
@@ -116,7 +118,7 @@ class IntrospectionInterpreter(AstInterpreter):
 
         if not self.is_subproject() and 'subproject_dir' in kwargs:
             spdirname = kwargs['subproject_dir']
-            if isinstance(spdirname, BaseStringNode):
+            if isinstance(spdirname, StringNode):
                 assert isinstance(spdirname.value, str)
                 self.subproject_dir = spdirname.value
         if not self.is_subproject():
@@ -163,14 +165,14 @@ class IntrospectionInterpreter(AstInterpreter):
         for l in self.flatten_args(raw_langs):
             if isinstance(l, str):
                 langs.append(l)
-            elif isinstance(l, BaseStringNode):
+            elif isinstance(l, StringNode):
                 langs.append(l.value)
 
         for lang in sorted(langs, key=compilers.sort_clink):
             lang = lang.lower()
             if lang not in self.coredata.compilers[for_machine]:
                 try:
-                    comp = detect_compiler_for(self.environment, lang, for_machine, True)
+                    comp = detect_compiler_for(self.environment, lang, for_machine, True, self.subproject)
                 except mesonlib.MesonException:
                     # do we even care about introspecting this language?
                     if required:
@@ -183,7 +185,7 @@ class IntrospectionInterpreter(AstInterpreter):
                         v = copy.copy(self.coredata.options[k])
                         k = k.evolve(subproject=self.subproject)
                         options[k] = v
-                    self.coredata.add_compiler_options(options, lang, for_machine, self.environment)
+                    self.coredata.add_compiler_options(options, lang, for_machine, self.environment, self.subproject)
 
     def func_dependency(self, node: BaseNode, args: T.List[TYPE_var], kwargs: T.Dict[str, TYPE_var]) -> None:
         args = self.flatten_args(args)
@@ -252,7 +254,7 @@ class IntrospectionInterpreter(AstInterpreter):
                 # Pop the first element if the function is a build target function
                 if isinstance(curr, FunctionNode) and curr.func_name.value in BUILD_TARGET_FUNCTIONS:
                     arg_nodes.pop(0)
-                elementary_nodes = [x for x in arg_nodes if isinstance(x, (str, BaseStringNode))]
+                elementary_nodes = [x for x in arg_nodes if isinstance(x, (str, StringNode))]
                 inqueue += [x for x in arg_nodes if isinstance(x, (FunctionNode, ArrayNode, IdNode, ArithmeticNode))]
                 if elementary_nodes:
                     res += [curr]
@@ -367,6 +369,6 @@ class IntrospectionInterpreter(AstInterpreter):
             assert isinstance(kw, IdNode), 'for mypy'
             if kw.value == 'subproject_dir':
                 # mypy does not understand "and isinstance"
-                if isinstance(val, BaseStringNode):
+                if isinstance(val, StringNode):
                     return val.value
         return None

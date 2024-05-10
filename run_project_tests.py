@@ -45,7 +45,7 @@ from mesonbuild.coredata import backendlist, version as meson_version
 from mesonbuild.modules.python import PythonExternalProgram
 from run_tests import (
     get_fake_options, run_configure, get_meson_script, get_backend_commands,
-    get_backend_args_for_dir, Backend, ensure_backend_detects_changes,
+    get_backend_args_for_dir, Backend,
     guess_backend, handle_meson_skip_test,
 )
 
@@ -72,11 +72,13 @@ if T.TYPE_CHECKING:
         failfast: bool
         no_unittests: bool
         only: T.List[str]
+        v: bool
 
 ALL_TESTS = ['cmake', 'common', 'native', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
              'keyval', 'platform-osx', 'platform-windows', 'platform-linux',
              'java', 'C#', 'vala', 'cython', 'rust', 'd', 'objective c', 'objective c++',
-             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland'
+             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland',
+             'format',
              ]
 
 
@@ -88,6 +90,7 @@ class BuildStep(Enum):
     clean = 5
     validate = 6
 
+verbose_output = False
 
 class TestResult(BaseException):
     def __init__(self, cicmds: T.List[str]) -> None:
@@ -720,7 +723,6 @@ def _run_test(test: TestDef,
 
     # Touch the meson.build file to force a regenerate
     def force_regenerate() -> None:
-        ensure_backend_detects_changes(backend)
         os.utime(str(test.path / 'meson.build'))
 
     # just test building
@@ -785,13 +787,13 @@ def _skip_keys(test_def: T.Dict) -> T.Tuple[bool, bool]:
 
     # Test is expected to skip if MESON_CI_JOBNAME contains any of the list of
     # substrings
-    if ('skip_on_jobname' in test_def) and (ci_jobname is not None):
-        skip_expected = any(s in ci_jobname for s in test_def['skip_on_jobname'])
+    if ('expect_skip_on_jobname' in test_def) and (ci_jobname is not None):
+        skip_expected = any(s in ci_jobname for s in test_def['expect_skip_on_jobname'])
 
     # Test is expected to skip if os matches
-    if 'skip_on_os' in test_def:
+    if 'expect_skip_on_os' in test_def:
         mesonenv = environment.Environment('', '', get_fake_options('/'))
-        for skip_os in test_def['skip_on_os']:
+        for skip_os in test_def['expect_skip_on_os']:
             if skip_os.startswith('!'):
                 if mesonenv.machines.host.system != skip_os[1:]:
                     skip_expected = True
@@ -981,7 +983,7 @@ def have_working_compiler(lang: str, use_tmp: bool) -> bool:
             return False
         if not compiler:
             return False
-        env.coredata.process_compiler_options(lang, compiler, env)
+        env.coredata.process_compiler_options(lang, compiler, env, '')
         try:
             compiler.sanity_check(env.get_scratch_dir(), env)
         except mesonlib.MesonException:
@@ -1125,6 +1127,7 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
         TestCategory('nasm', 'nasm'),
         TestCategory('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
         TestCategory('wayland', 'wayland', should_skip_wayland()),
+        TestCategory('format', 'format'),
     ]
 
     categories = [t.category for t in all_tests]
@@ -1176,8 +1179,9 @@ class TestRunFuture:
         return self.future.result() if self.future else None
 
     def log(self) -> None:
-        without_install = '' if install_commands else '(without install)'
-        safe_print(self.status.value, without_install, *self.testdef.display_name())
+        if verbose_output or self.status.value != TestStatus.OK.value:
+            without_install = '' if install_commands else '(without install)'
+            safe_print(self.status.value, without_install, *self.testdef.display_name())
 
     def update_log(self, new_status: TestStatus) -> None:
         self.status = new_status
@@ -1230,6 +1234,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
         current_suite = ET.SubElement(junit_root, 'testsuite', {'name': name, 'tests': str(len(test_cases))})
         if skipped:
             futures += [LogRunFuture(['\n', bold(f'Not running {name} tests.'), '\n'])]
+            continue
         else:
             futures += [LogRunFuture(['\n', bold(f'Running {name} tests.'), '\n'])]
 
@@ -1604,10 +1609,13 @@ if __name__ == '__main__':
                         help='Not used, only here to simplify run_tests.py')
     parser.add_argument('--only', default=[],
                         help='name of test(s) to run, in format "category[/name]" where category is one of: ' + ', '.join(ALL_TESTS), nargs='+')
+    parser.add_argument('-v', default=False, action='store_true',
+                        help='Verbose mode')
     parser.add_argument('--cross-file', action='store', help='File describing cross compilation environment.')
     parser.add_argument('--native-file', action='store', help='File describing native compilation environment.')
     parser.add_argument('--use-tmpdir', action='store_true', help='Use tmp directory for temporary files.')
     options = T.cast('ArgumentType', parser.parse_args())
+    verbose_output = options.v
 
     if options.cross_file:
         options.extra_args += ['--cross-file', options.cross_file]
